@@ -1,16 +1,10 @@
+import type { Metadata } from 'next';
+
 import PdfToolPage from '@/components/PdfToolPage';
+import { toolMetadata } from '@/lib/metadata';
+
+export const metadata: Metadata = toolMetadata('protect');
 
 export default function ProtectPage() {
-  return (
-    <PdfToolPage
-      title="Protéger PDF"
-      description="Ajouter un mot de passe à votre fichier PDF pour empêcher l'accès non autorisé."
-      icon="🔒"
-      endpoint="/api/pdf/protect"
-      accept=".pdf"
-      params={[
-        { name: 'password', label: 'Mot de passe', type: 'text' },
-      ]}
-    />
-  );
+  return <PdfToolPage slug="protect" />;
 }

@@ -1,0 +1,26 @@
+/**
+ * Icone du site.
+ *
+ * Reprend le motif signature des schemas de l'accueil : deux feuilles qui se
+ * chevauchent — la fusion, l'operation la plus emblematique de la liste.
+ *
+ * Contraintes : fond clair et marque sombre, pour rester visible sur une barre
+ * d'onglets claire comme sombre. Pas d'accent rouge — dans ce site l'accent
+ * signale un etat, il n'habille pas la marque.
+ */
+export default function Icon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 64 64"
+      width="64"
+      height="64"
+    >
+      <rect width="64" height="64" rx="12" fill="#FAFAF8" />
+      <g stroke="#14181F" strokeWidth="3">
+        <rect x="12" y="11" width="23" height="35" fill="#6E7681" />
+        <rect x="30" y="19" width="23" height="34" fill="#14181F" />
+      </g>
+    </svg>
+  );
+}

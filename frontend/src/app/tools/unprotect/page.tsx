@@ -1,16 +1,10 @@
+import type { Metadata } from 'next';
+
 import PdfToolPage from '@/components/PdfToolPage';
+import { toolMetadata } from '@/lib/metadata';
+
+export const metadata: Metadata = toolMetadata('unprotect');
 
 export default function UnprotectPage() {
-  return (
-    <PdfToolPage
-      title="Déverrouiller PDF"
-      description="Supprimer la protection mot de passe d'un fichier PDF."
-      icon="🔓"
-      endpoint="/api/pdf/unprotect"
-      accept=".pdf"
-      params={[
-        { name: 'password', label: 'Mot de passe actuel', type: 'text' },
-      ]}
-    />
-  );
+  return <PdfToolPage slug="unprotect" />;
 }

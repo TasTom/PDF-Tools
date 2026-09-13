@@ -1,67 +1,79 @@
-const tools = [
-  { slug: 'merge', icon: '📄', title: 'Fusionner PDF', desc: 'Combiner plusieurs PDF en un seul fichier', color: 'from-blue-500 to-blue-600' },
-  { slug: 'split', icon: '✂️', title: 'Découper PDF', desc: 'Extraire des pages spécifiques d\'un PDF', color: 'from-purple-500 to-purple-600' },
-  { slug: 'compress', icon: '🗜️', title: 'Compresser PDF', desc: 'Réduire la taille de vos fichiers PDF', color: 'from-green-500 to-green-600' },
-  { slug: 'to-image', icon: '🖼️', title: 'PDF → Image', desc: 'Convertir les pages PDF en images PNG/JPG', color: 'from-orange-500 to-orange-600' },
-  { slug: 'from-images', icon: '📋', title: 'Image → PDF', desc: 'Créer un PDF à partir de plusieurs images', color: 'from-pink-500 to-pink-600' },
-  { slug: 'protect', icon: '🔒', title: 'Protéger PDF', desc: 'Ajouter un mot de passe à vos PDF', color: 'from-red-500 to-red-600' },
-  { slug: 'unprotect', icon: '🔓', title: 'Déverrouiller PDF', desc: 'Supprimer la protection mot de passe', color: 'from-yellow-500 to-yellow-600' },
-  { slug: 'watermark', icon: '💧', title: 'Filigrane PDF', desc: 'Ajouter un filigrane texte à chaque page', color: 'from-cyan-500 to-cyan-600' },
-  { slug: 'rotate', icon: '🔄', title: 'Pivoter PDF', desc: 'Rotation 90°, 180° ou 270° des pages', color: 'from-indigo-500 to-indigo-600' },
-  { slug: 'crop', icon: '✂️', title: 'Recadrer PDF', desc: 'Recadrer les pages à une taille personnalisée', color: 'from-teal-500 to-teal-600' },
+import Link from 'next/link';
+
+import Diagram from '@/components/Diagram';
+import { TOOLS } from '@/lib/tools';
+
+/**
+ * L'accueil EST le sommaire. Pas de heros centre, pas de paragraphes de vente,
+ * pas de bloc « pourquoi nous » : qui arrive ici a un fichier a traiter, et la
+ * seule chose utile est la liste des operations.
+ *
+ * La liste n'est pas rangee au hasard : elle est groupee par SENS de la
+ * transformation (reunir, separer, retoucher, verrouiller), ce qui reprend
+ * exactement ce que montre chaque schema. Quatre groupes de 2, 2, 4 et 2 —
+ * structure volontairement inegale, choisie pour le contenu et non pour
+ * remplir une grille.
+ */
+const GROUPS: { label: string; slugs: string[] }[] = [
+  { label: 'Réunir', slugs: ['merge', 'from-images'] },
+  { label: 'Séparer', slugs: ['split', 'to-image'] },
+  { label: 'Retoucher', slugs: ['compress', 'crop', 'rotate', 'watermark'] },
+  { label: 'Verrouiller', slugs: ['protect', 'unprotect'] },
 ];
 
 export default function Home() {
   return (
-    <div className="max-w-6xl mx-auto px-4 py-16">
-      <div className="text-center mb-16">
-        <h1 className="text-5xl font-bold mb-6 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+    <div className="mx-auto max-w-6xl px-5">
+      <div className="pt-12 pb-14 sm:pt-16">
+        <h1 className="text-[32px] font-semibold leading-[1.15] tracking-[-0.02em] sm:text-[40px]">
           PDF Tools
         </h1>
-        <p className="text-xl text-slate-300 mb-4">
-          Outils PDF gratuits et rapides — tout en ligne, sans inscription
+        <p className="mt-4 max-w-measure text-lg text-ink-soft">
+          Dix opérations sur un document, gratuitement et sans compte.
         </p>
-        <p className="text-slate-400 max-w-2xl mx-auto">
-          Fusionnez, découpez, compressez, convertissez et protégez vos fichiers PDF
-          directement depuis votre navigateur. Gratuit, rapide et sécurisé.
+        <p className="mt-2 max-w-measure text-ink-faint">
+          Vos fichiers ne sont pas conservés.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        {tools.map((tool) => (
-          <a
-            key={tool.slug}
-            href={`/tools/${tool.slug}`}
-            className="group rounded-2xl border border-slate-700 bg-slate-900/50 p-6 hover:border-blue-500 hover:bg-blue-500/5 transition-all"
-          >
-            <div className="text-4xl mb-3">{tool.icon}</div>
-            <h2 className="text-lg font-semibold text-white group-hover:text-blue-300 mb-1">
-              {tool.title}
-            </h2>
-            <p className="text-sm text-slate-400">{tool.desc}</p>
-          </a>
+      <div className="space-y-12 pb-4">
+        {GROUPS.map(group => (
+          <section key={group.label} aria-labelledby={`groupe-${group.label}`}>
+            <div className="lg:grid lg:grid-cols-[8rem_minmax(0,1fr)] lg:gap-x-10">
+              <h2
+                id={`groupe-${group.label}`}
+                className="mb-4 font-mono text-xs text-ink-faint lg:mb-0 lg:pt-1"
+              >
+                {group.label}
+              </h2>
+
+              <ul className="grid gap-x-10 gap-y-7 sm:grid-cols-2">
+                {group.slugs.map(slug => {
+                  const tool = TOOLS.find(t => t.slug === slug);
+                  if (!tool) return null;
+                  return (
+                    <li key={slug}>
+                      <Link
+                        href={`/tools/${tool.slug}`}
+                        className="group flex items-start gap-4"
+                      >
+                        <Diagram slug={tool.slug} className="mt-0.5" />
+                        <span className="min-w-0">
+                          <span className="block font-medium text-ink transition-colors group-hover:text-accent">
+                            {tool.title}
+                          </span>
+                          <span className="mt-1 block text-sm text-ink-soft">
+                            {tool.blurb}
+                          </span>
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </section>
         ))}
-      </div>
-
-      <div className="mt-20 text-center">
-        <h2 className="text-2xl font-bold text-white mb-4">Pourquoi PDF Tools ?</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-8">
-          <div className="text-center">
-            <div className="text-3xl mb-2">⚡</div>
-            <h3 className="font-semibold text-white mb-1">Ultra rapide</h3>
-            <p className="text-sm text-slate-400">Traitement côté serveur en quelques secondes</p>
-          </div>
-          <div className="text-center">
-            <div className="text-3xl mb-2">🔒</div>
-            <h3 className="font-semibold text-white mb-1">100% sécurisé</h3>
-            <p className="text-sm text-slate-400">Les fichiers sont supprimés après traitement</p>
-          </div>
-          <div className="text-center">
-            <div className="text-3xl mb-2">💰</div>
-            <h3 className="font-semibold text-white mb-1">Gratuit</h3>
-            <p className="text-sm text-slate-400">10 opérations/jour sans inscription</p>
-          </div>
-        </div>
       </div>
     </div>
   );

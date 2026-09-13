@@ -2,6 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-slate-950 text-white;
+@layer base {
+  html {
+    /* L'interface est en francais : on laisse le navigateur gerer la césure. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+  }
+
+  /* Le focus clavier est le seul endroit ou l'accent est systematique.
+     Il ne doit jamais etre supprime : c'est la seule facon de suivre sa
+     position pour qui navigue au clavier. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-paper;
+  }
+
+  ::selection {
+    @apply bg-accent-soft text-ink;
+  }
+
+  /* Mouvement : rien n'est indispensable. Qui demande a en etre dispense
+     n'en recoit aucun. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
+
+@layer utilities {
+  /* Une seule animation sur tout le site : la barre de progression pendant un
+     traitement. Elle dit qu'un travail est en cours, elle ne decore pas.
+     `prefers-reduced-motion` la fige (voir plus haut) : la barre reste alors
+     visible a l'arret, ce qui suffit a signaler l'attente. */
+  @keyframes indeterminate {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(200%);
+    }
+  }
+
+  .animate-indeterminate {
+    animation: indeterminate 1.4s ease-in-out infinite;
+  }
+}
+

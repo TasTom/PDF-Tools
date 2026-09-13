@@ -1,17 +1,10 @@
+import type { Metadata } from 'next';
+
 import PdfToolPage from '@/components/PdfToolPage';
+import { toolMetadata } from '@/lib/metadata';
+
+export const metadata: Metadata = toolMetadata('to-image');
 
 export default function ToImagePage() {
-  return (
-    <PdfToolPage
-      title="PDF → Image"
-      description="Convertir les pages d'un fichier PDF en images PNG ou JPG haute qualité."
-      icon="🖼️"
-      endpoint="/api/pdf/to-image"
-      accept=".pdf"
-      params={[
-        { name: 'format', label: 'Format de sortie', type: 'select', options: ['png', 'jpeg'], default: 'png' },
-        { name: 'dpi', label: 'Résolution (DPI)', type: 'select', options: ['72', '150', '300'], default: '150' },
-      ]}
-    />
-  );
+  return <PdfToolPage slug="to-image" />;
 }

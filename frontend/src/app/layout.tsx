@@ -1,48 +1,87 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
+import { IBM_Plex_Mono, IBM_Plex_Sans } from 'next/font/google';
+
+import ToolIndex from '@/components/ToolIndex';
+import { SITE_URL } from '@/lib/site';
 import './globals.css';
 
+/**
+ * Deux fontes, deux roles distincts.
+ *
+ * IBM Plex Sans vient de la documentation technique : dessinee pour du texte
+ * d'ingenierie, ce qui est le sujet du site. IBM Plex Mono sert a tout ce qui
+ * est MESURE (tailles, pages, points) ; sa presence n'est pas decorative, elle
+ * separe les valeurs des phrases. Aucune des deux n'est la fonte par defaut
+ * d'un projet genere (Inter, system-ui).
+ */
+const sans = IBM_Plex_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  variable: '--font-sans',
+  display: 'swap',
+});
+
+const mono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500'],
+  variable: '--font-mono',
+  display: 'swap',
+});
+
 export const metadata: Metadata = {
+  // Sans metadataBase, Next ne peut pas construire les URL absolues des
+  // metadonnees et emet un avertissement au build.
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: 'PDF Tools — Outils PDF Gratuits en Ligne',
-    template: '%s | PDF Tools',
+    default: 'PDF Tools — dix opérations sur un document',
+    template: '%s · PDF Tools',
   },
-  description: 'Outils PDF gratuits : fusionner, découper, compresser, convertir, protéger vos fichiers PDF en ligne.',
-  keywords: ['pdf tools', 'merge pdf', 'compress pdf', 'pdf to image', 'split pdf', 'outils pdf gratuits'],
+  alternates: { canonical: '/' },
+  description:
+    'Fusionner, découper, compresser, convertir, protéger vos PDF. Dix outils gratuits, sans compte. Les fichiers sont traités le temps de l’opération, puis oubliés.',
+  keywords: [
+    'pdf', 'fusionner pdf', 'compresser pdf', 'découper pdf',
+    'convertir pdf en image', 'protéger pdf', 'filigrane pdf',
+  ],
   openGraph: {
     type: 'website',
     locale: 'fr_FR',
-    url: 'https://pdf.warult-tools.com',
+    url: SITE_URL,
     siteName: 'PDF Tools',
-    title: 'PDF Tools — Outils PDF Gratuits en Ligne',
-    description: 'Fusionnez, découpez, compressez et convertissez vos PDF gratuitement.',
+    title: 'PDF Tools — dix opérations sur un document',
+    description: 'Dix outils PDF gratuits, sans compte ni stockage.',
   },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="fr">
-      <body className="bg-slate-950 text-white min-h-screen">
-        <nav className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-md sticky top-0 z-50">
-          <div className="max-w-6xl mx-auto px-4 flex items-center justify-between h-16">
-            <a href="/" className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-              PDF Tools
-            </a>
-            <div className="hidden md:flex items-center gap-6 text-sm text-slate-300">
-              <a href="/tools/merge" className="hover:text-white transition">Fusionner</a>
-              <a href="/tools/split" className="hover:text-white transition">Découper</a>
-              <a href="/tools/compress" className="hover:text-white transition">Compresser</a>
-              <a href="/tools/to-image" className="hover:text-white transition">PDF → Image</a>
-              <a href="/tools/protect" className="hover:text-white transition">Protéger</a>
-              <a href="/pricing" className="hover:text-white transition">Tarifs</a>
-            </div>
-            <a href="/auth/login" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm transition">
-              Connexion
-            </a>
+    <html lang="fr" className={`${sans.variable} ${mono.variable}`}>
+      <body className="flex min-h-screen flex-col bg-paper text-ink">
+        {/* En-tete non colle : la barre fixe avec flou est un reflexe de
+            gabarit, et elle ne sert ici a rien. */}
+        <header className="border-b border-rule">
+          <div className="mx-auto flex max-w-6xl flex-col gap-3 px-5 py-4 lg:flex-row lg:items-baseline lg:justify-between">
+            <Link
+              href="/"
+              className="font-mono text-[13px] font-medium tracking-[0.1em] text-ink"
+            >
+              WARULT
+            </Link>
+            <ToolIndex />
           </div>
-        </nav>
+        </header>
+
         <main className="flex-1">{children}</main>
-        <footer className="border-t border-slate-800 py-8 text-center text-sm text-slate-500">
-          <p>© 2026 PDF Tools — warult-tools.com. Tous droits réservés.</p>
+
+        <footer className="mt-24 border-t border-rule">
+          <div className="mx-auto flex max-w-6xl flex-col gap-2 px-5 py-8 sm:flex-row sm:items-baseline sm:justify-between">
+            <p className="max-w-measure text-sm text-ink-soft">
+              Les fichiers sont traités le temps de l’opération, puis oubliés.
+              Aucun compte, aucun stockage, aucune revente.
+            </p>
+            <p className="font-mono text-xs text-ink-faint">© 2026 warult-tools.com</p>
+          </div>
         </footer>
       </body>
     </html>
