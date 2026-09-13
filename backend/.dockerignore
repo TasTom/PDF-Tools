@@ -1,0 +1,13 @@
+# Contexte de construction de l'image Docker (voir hf_deploy/Dockerfile).
+# Le Dockerfile ne copie que `requirements.txt` et `app/`, mais tout le reste
+# serait quand meme envoye au demon : ces exclusions gardent un contexte de
+# quelques centaines de Ko au lieu de plus de 100 Mo.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+conftest.py
+pytest.ini
+requirements-dev.txt
