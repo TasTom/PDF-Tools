@@ -29,10 +29,33 @@ from app.services.pdf_processing import (
 logger = logging.getLogger("pdf_tools")
 logging.basicConfig(level=logging.INFO)
 
+
+def client_key(request: Request) -> str:
+    """Cle de limitation de debit : l'adresse IP reelle du client.
+
+    `get_remote_address` de slowapi lit `request.client.host`, qui est l'adresse
+    du PROXY quand le service est heberge. Mesure en production derriere le proxy
+    HuggingFace : cette adresse varie d'une requete a l'autre, donc le compteur
+    etait reparti sur plusieurs cles — 100 appels d'affilee n'ont declenche que
+    45 refus, au lieu d'un mur des le 21e. La limite effective etait multipliee
+    par le nombre d'adresses distinctes.
+
+    On lit donc `X-Forwarded-For`, renseigne par le proxy et porte par l'adresse
+    d'origine. A defaut, on retombe sur le comportement par defaut.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        # Un proxy ajoute son entree a la suite : la PREMIERE est le client.
+        client = forwarded.split(",")[0].strip()
+        if client:
+            return client
+    return get_remote_address(request)
+
+
 # Protection anti-abus, entièrement en mémoire et par adresse IP.
 # Aucune donnée utilisateur n'est conservée et les compteurs repartent de zéro
 # à chaque redémarrage du processus.
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=client_key)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -147,6 +147,7 @@ Ce qu'ils figent, et qui autrement ne se revérifierait jamais :
 | `watermark` écrit réellement le texte | Compter les pages ne prouverait rien |
 | `compress` ne renvoie jamais plus gros que l'entrée | Garantie explicite du service |
 | Le 21ᵉ appel rapproché renvoie `429` | La limite annoncée doit être réellement appliquée |
+| Deux clients derrière le même proxy ne partagent pas de compteur | Le défaut mesuré en production : la clé était l'adresse du proxy, qui varie |
 | `/health` n'est jamais limité | La sonde de déploiement ne doit pas être bloquée |
 
 Les compteurs du limiteur sont remis à zéro avant chaque test : sans cela, le test de
@@ -171,6 +172,27 @@ appliqué par `slowapi`, qui renvoie `429 Too Many Requests` au-delà.
 
 Les deux valeurs se règlent sans toucher au code (`RATE_LIMIT_LIGHT`, `RATE_LIMIT_HEAVY`).
 Le stockage est en mémoire : voir « Limites connues ».
+
+### La clé de comptage n'est pas l'adresse du proxy
+
+`get_remote_address` de slowapi lit `request.client.host`. **Derrière un hébergeur, cette
+adresse est celle du proxy, pas celle du client** — et elle peut varier d'une requête à
+l'autre. Mesuré en production : le compteur se répartissait alors sur plusieurs clés, donc
+sur plusieurs limites.
+
+| 100 appels d'affilée | Comportement |
+|---|---|
+| Avec `request.client.host` | 55 × `200`, puis 45 × `429` — premier refus au **42ᵉ** appel |
+| Avec `X-Forwarded-For` (corrigé) | 20 × `200`, puis un mur de `429` dès le **21ᵉ** appel |
+
+La clé est donc lue dans `X-Forwarded-For`, dont la **première** entrée porte le client
+d'origine (les suivantes sont ajoutées par les proxys).
+
+⚠️ **Cette valeur est déclarable par le client.** Un appelant qui envoie un
+`X-Forwarded-For` différent à chaque requête obtient un compteur neuf à chaque fois. La
+limite protège donc des abus ordinaires, pas d'un attaquant déterminé. La corriger
+demanderait une clé que le client ne contrôle pas — ce qui suppose une authentification,
+laquelle n'existe pas ici par choix.
 
 ## Configuration
 

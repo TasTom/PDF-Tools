@@ -499,6 +499,43 @@ def test_rate_limit_returns_429_past_the_threshold(client):
     assert codes[allowed] == 429
 
 
+def test_rate_limit_counts_per_forwarded_client_not_per_proxy(client):
+    """Deux clients distincts derriere un meme proxy ne partagent pas de compteur.
+
+    Ce test vient d'un defaut constate EN PRODUCTION : la cle etait
+    `request.client.host` (l'adresse du proxy), qui variait d'une requete a
+    l'autre. Le compteur se repartissait donc sur plusieurs cles et la limite
+    effective etait multipliee d'autant — mesure : 100 appels d'affilee ne
+    declenchaient que 45 refus.
+
+    Le comportement corrige est verifie sur DEUX aspects :
+    - des `X-Forwarded-For` differents sont comptes separement ;
+    - un `X-Forwarded-For` qui varie ne fait PAS repartir le compteur.
+    """
+    payload = {"file": as_pdf(make_pdf(1))}
+    formulaire = {"x": "0", "y": "0", "w": "595", "h": "842"}
+    allowed = int(settings.RATE_LIMIT_LIGHT.split("/")[0])
+
+    # Un client derriere une chaine de proxys : seule la PREMIERE entree compte.
+    entete = {"X-Forwarded-For": "203.0.113.7, 70.41.3.18, 150.172.238.178"}
+    codes = [
+        client.post("/api/pdf/crop", files=payload, data=formulaire, headers=entete).status_code
+        for _ in range(allowed + 1)
+    ]
+    assert codes[:allowed] == [200] * allowed
+    assert codes[allowed] == 429, "les entrees ajoutees par les proxys ne doivent pas scinder le compteur"
+
+    limiter.reset()
+
+    # Un AUTRE client ne doit pas heriter du compteur du premier.
+    autre = {"X-Forwarded-For": "198.51.100.42"}
+    premier = [client.post("/api/pdf/crop", files=payload, data=formulaire, headers=entete).status_code
+               for _ in range(allowed)]
+    reponse = client.post("/api/pdf/crop", files=payload, data=formulaire, headers=autre)
+    assert all(code == 200 for code in premier)
+    assert reponse.status_code == 200, "un client different doit avoir son propre compteur"
+
+
 def test_health_is_not_rate_limited(client):
     """La sonde de deploiement ne doit jamais etre bloquee par le limiteur."""
     assert all(client.get("/health").status_code == 200 for _ in range(30))
