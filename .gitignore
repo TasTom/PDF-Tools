@@ -11,3 +11,6 @@ venv/
 # faire dans le depot.
 backend/data/
 *.tsbuildinfo
+
+# Message de commit temporaire
+_commit_msg.txt

@@ -2,8 +2,21 @@
 
 On teste le paquet EXACT qui sera publie : meme Dockerfile, meme contenu, meme
 port. Si tout passe ici, le Space fonctionnera a l'identique.
+
+Le script S'INSCRIT d'abord : depuis l'ajout des comptes, les dix outils exigent
+un jeton Bearer. Sans cette etape, toutes les verifications suivantes mesureraient
+des 401 et le script conclurait a tort que le deploiement est casse.
+
+Usage :
+    python hf_deploy/verify_deployment.py https://warult47-pdf-tools-api.hf.space
+    python hf_deploy/verify_deployment.py https://pdf.warult-tools.com
+
+Le compte cree reste en base. C'est assume : le supprimer demanderait un acces
+base que ce script n'a pas, et un compte nomme `verif-*` se repere au premier
+coup d'oeil dans la console.
 """
 import io
+import json
 import os
 import sys
 import urllib.error
@@ -19,6 +32,7 @@ from reportlab.pdfgen import canvas
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8200"
 resultats = []
+JETON = ""
 
 
 def pdf(pages=3, label="DOC"):
@@ -61,12 +75,55 @@ def post(path, files, fields=None):
         ).encode() + content + b"\r\n"
     body += f"--{boundary}--\r\n".encode()
     req = urllib.request.Request(BASE + path, data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Authorization": f"Bearer {JETON}",
+        })
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             return r.status, r.read(), dict(r.headers)
     except urllib.error.HTTPError as e:
         return e.code, e.read(), dict(e.headers)
+
+
+def post_anon(path, files, fields=None):
+    """Meme appel, sans jeton : sert a verifier que l'acces est bien refuse."""
+    global JETON
+    garde, JETON = JETON, ""
+    try:
+        return post(path, files, fields)
+    finally:
+        JETON = garde
+
+
+def appel_json(path, charge):
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(charge).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, {"detail": e.read().decode()[:200]}
+
+
+def inscrire() -> int:
+    """Cree un compte de verification et garde son jeton."""
+    global JETON
+    identifiant = uuid.uuid4().hex[:10]
+    statut, corps = appel_json("/api/auth/register", {
+        "email": f"verif-{identifiant}@example.com",
+        "username": f"verif{identifiant}",
+        "password": "MotDePasse1",
+    })
+    if statut == 201:
+        JETON = corps["access_token"]
+    else:
+        print(f"    detail : {corps.get('detail')}")
+    return statut
 
 
 def ok(label, condition, detail=""):
@@ -91,6 +148,17 @@ except urllib.error.HTTPError as e:
         print(f"  /health -> HTTP {e.code}")
 except Exception as exc:
     print(f"  /health -> {type(exc).__name__}")
+
+print("\n=== compte ===")
+# Sans jeton, tout ce qui suit ne mesurerait que des 401.
+refus = post_anon("/api/pdf/rotate", [("file", "a.pdf", doc3)], {"angle": "90"})
+ok("un visiteur sans compte est refuse", refus[0] == 401, f"HTTP {refus[0]}")
+
+statut = inscrire()
+ok("inscription acceptee", statut == 201, f"HTTP {statut}")
+if not JETON:
+    print("\nAucun jeton : la suite ne mesurerait que des 401. Arret.")
+    sys.exit(1)
 
 print("\n=== merge ===")
 s, data, _ = post("/api/pdf/merge", [

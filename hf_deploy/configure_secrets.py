@@ -17,6 +17,15 @@ qu'il reste une seule source de verite, puis poussee dans le Space. Le script
 n'affiche jamais le secret : seulement son empreinte, pour verifier la
 concordance sans le divulguer.
 
+3. `DATABASE_URL` : le Space avait herite de celle du gabarit de l'autre produit,
+et son mot de passe est refuse par la base. Le script ne la genere pas — il ne
+peut pas — mais il la **lit dans le `.env` local** et la pousse, ce qui evite
+d'avoir a la coller dans une conversation ou un historique de commandes.
+
+   Elle est verifiee avant d'etre appliquee : une URL illisible ou incomplete
+   ferait echouer le demarrage du Space et rendrait le site indisponible, ce qui
+   s'est deja produit trois fois.
+
 Usage :
     python hf_deploy/configure_secrets.py --dry-run
     python hf_deploy/configure_secrets.py
@@ -29,6 +38,8 @@ import re
 import secrets
 import sys
 from pathlib import Path
+
+from sqlalchemy.engine import make_url
 
 RACINE = Path(__file__).resolve().parent.parent
 ENV = RACINE / ".env"
@@ -53,6 +64,100 @@ MARQUEUR = "SECRET_KEY_DEDIEE"
 def empreinte(valeur: str) -> str:
     """Empreinte courte : permet de comparer deux secrets sans les reveler."""
     return hashlib.sha256(valeur.encode()).hexdigest()[:12]
+
+
+# Noms dont la valeur ne doit JAMAIS etre affichee.
+SECRETS = ("SECRET_KEY", "DATABASE_URL")
+
+
+def resume(nom: str, valeur: str) -> str:
+    """Apercu affichable d'une variable, sans jamais reveler un mot de passe."""
+    if nom == "SECRET_KEY":
+        return f"<{len(valeur)} caracteres>"
+    if nom == "DATABASE_URL":
+        # `hide_password` remplace le mot de passe par trois etoiles. L'hote et
+        # le nom de base restent lisibles : c'est exactement ce qu'on veut
+        # verifier avant d'ecraser le secret du Space.
+        try:
+            url = make_url(valeur)
+            return f"{url.drivername} {url.host or '?'}/{url.database or '?'}"
+        except Exception:
+            return "<illisible>"
+    return valeur
+
+
+def verifier_url_base(url: str) -> str | None:
+    """Renvoie un message d'erreur si l'URL ne peut pas etre utilisee, sinon None.
+
+    Le but est d'echouer ICI, avec une explication, plutot que sur le Space par
+    un `503 Your space is in error` qui ne dit rien. Chaque controle correspond a
+    une panne deja rencontree.
+    """
+    if not url:
+        return None  # absente : le secret existant du Space n'est pas touche
+
+    if url != url.strip() or url.startswith(("'", '"')):
+        return ("guillemets ou espaces autour de la valeur : ecrire "
+                "DATABASE_URL=postgresql://... sans encadrement")
+
+    try:
+        analyse = make_url(url)
+    except Exception as erreur:
+        return (f"URL illisible ({erreur}). Cas le plus courant : un caractere "
+                "special NON encode dans le mot de passe. Un '@' doit s'ecrire "
+                "%40, un '#' %23, un '?' %3F, un '/' %2F, un '%' %25.")
+
+    if not analyse.drivername.startswith(("postgres", "sqlite")):
+        return f"moteur inattendu : {analyse.drivername}"
+
+    # SQLite est un fichier : ni hote, ni base, ni mot de passe. Ces controles ne
+    # valent que pour PostgreSQL, sinon une base locale de developpement serait
+    # refusee a tort.
+    if analyse.drivername.startswith("sqlite"):
+        return None
+
+    if not analyse.host:
+        return "hote manquant : l'URL doit contenir @hote"
+    if not analyse.database:
+        return "nom de base manquant : l'URL doit se terminer par /nom_de_base"
+    if not analyse.password:
+        return "mot de passe manquant : la base refusera la connexion"
+    if not analyse.username:
+        return "nom d'utilisateur manquant"
+
+    return None
+
+
+def avertissements(url: str) -> list[str]:
+    """Remarques qui ne bloquent pas, mais qui expliquent une panne a venir.
+
+    Une avertissement n'est pas une erreur : le script continue. Mais le lire ici
+    coute moins cher que de le decouvrir dans les journaux du Space, apres un
+    redeploiement qui a rendu le site indisponible.
+    """
+    if not url.startswith("postgres"):
+        return []
+
+    try:
+        analyse = make_url(url)
+    except Exception:
+        return []
+
+    remarques = []
+
+    # Neon publie deux chaines de connexion. Celle dont l'hote contient
+    # « -pooler » passe par PgBouncer en mode transaction, qui ne supporte pas
+    # les requetes preparees d'asyncpg : il faut alors desactiver son cache.
+    # Celle sans « -pooler » est la connexion directe, qui fonctionne telle
+    # quelle — c'est celle a privilegier ici.
+    if analyse.host and "-pooler" in analyse.host:
+        remarques.append(
+            "l'hote contient « -pooler » (PgBouncer en mode transaction). "
+            "asyncpg y echoue sur ses requetes preparees ; preferer la chaine "
+            "SANS « -pooler » depuis la console Neon (bouton « Connect »)."
+        )
+
+    return remarques
 
 
 def lire_env() -> dict[str, str]:
@@ -122,12 +227,35 @@ def main() -> int:
         "CORS_ORIGINS": f"{DOMAINE},http://localhost:3000",
     }
 
+    # --- Base de donnees ---
+    url_base = entrees.get("DATABASE_URL", "").strip()
+    if not url_base:
+        print("\n=== base de donnees ===")
+        print(f"  DATABASE_URL absente de {ENV.name} : le secret du Space est "
+              "laisse tel quel (et il est refuse par la base).")
+        print("  Pour la fournir : ajouter une ligne "
+              "DATABASE_URL=postgresql://... dans .env, puis relancer ce script.")
+    else:
+        erreur = verifier_url_base(url_base)
+        if erreur:
+            # On s'arrete AVANT d'appliquer quoi que ce soit : un secret
+            # invalide pousse sur le Space ferait echouer son demarrage.
+            sys.exit(
+                f"\nERREUR : DATABASE_URL inutilisable.\n  {erreur}\n\n"
+                "  Rien n'a ete applique. Corriger la ligne DATABASE_URL de "
+                f"{ENV.name}, puis relancer."
+            )
+        variables["DATABASE_URL"] = url_base
+        print("\n=== base de donnees ===")
+        print(f"  DATABASE_URL lue depuis {ENV.name} : {resume('DATABASE_URL', url_base)}")
+        for avertissement in avertissements(url_base):
+            print(f"  ATTENTION : {avertissement}")
+
     if args.dry_run:
         print("\n--dry-run : rien n'a ete applique.")
         print("  variables qui seraient definies :")
         for nom, valeur in variables.items():
-            apercu = f"{len(valeur)} caracteres" if nom == "SECRET_KEY" else valeur
-            print(f"    {nom} = {apercu}")
+            print(f"    {nom} = {resume(nom, valeur)}")
         return 0
 
     if neuve != locale:
@@ -142,8 +270,7 @@ def main() -> int:
     api = HfApi()
     for nom, valeur in variables.items():
         api.add_space_secret(ESPACE, nom, valeur)
-        apercu = f"{len(valeur)} caracteres" if nom == "SECRET_KEY" else valeur
-        print(f"  {ESPACE} <- {nom} = {apercu}")
+        print(f"  {ESPACE} <- {nom} = {resume(nom, valeur)}")
 
     print("\nLe Space redemarre pour prendre en compte les secrets.")
     return 0
