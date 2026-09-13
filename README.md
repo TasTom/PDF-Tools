@@ -255,18 +255,32 @@ Build de production, Lighthouse :
 Aucun audit en échec. Les seules pistes restantes viennent des polyfills de Next lui-même
 (11 à 20 Kio), et non du code de ce dépôt.
 
+## Déploiement
+
+Le contexte de construction est le dossier **`backend/`**, pas `hf_deploy/` :
+
+```bash
+docker build -f hf_deploy/Dockerfile -t pdf-tools-api backend/
+docker run -p 8000:8000 pdf-tools-api
+```
+
+L'image construit en 25 s et pèse 359 Mo. Elle tourne en utilisateur non-root (uid 1000),
+comme l'exige un Space HuggingFace, et embarque une `HEALTHCHECK` qui interroge `/health` :
+un conteneur défaillant est donc détecté de l'intérieur.
+
+Le `Dockerfile` copie `requirements.txt` et `app/` nommément, jamais `COPY . .` : le dossier
+`backend/` contient un virtualenv de développement de plus de 100 Mo, qui n'a rien à faire
+dans une image Linux. Le `.dockerignore` associé ramène le contexte de 103 Mo à 0,03 Mo.
+
 ## Limites connues
 
 - **Les compteurs de débit vivent en mémoire.** Ils repartent de zéro à chaque redémarrage
   et ne sont pas partagés entre instances.
-- **`hf_deploy/Dockerfile` n'a jamais été construit.** Les dépendances ont été vérifiées
-  comme disponibles en roues Linux (`manylinux`, CPython 3.11), mais l'image elle-même
-  n'a pas été testée : Docker Desktop n'était pas démarré au moment de la vérification.
-  Le contexte de construction attendu est le dossier `backend/` (le Dockerfile copie
-  `requirements.txt` puis `app.main`), pas `hf_deploy/`.
-- **`PyPDF2` a été migré vers `pypdf`** le 2026-09-13. `PdfMerger` ayant disparu,
-  la fusion passe par `PdfWriter.append`. Rotation, recadrage, fusion et chiffrement
-  ont été comparés entre les deux bibliothèques avant bascule : résultats identiques.
+- **Le déploiement lui-même n'est pas automatisé.** L'image est construite et vérifiée à la
+  main ; il n'existe ni script de publication vers le Space, ni intégration continue. Le
+  `Dockerfile` vit dans `hf_deploy/` alors que le contexte attendu est `backend/` : un Space
+  HuggingFace exige le `Dockerfile` à la racine de son dépôt, donc `app/` et
+  `requirements.txt` doivent y être copiés avant publication.
 - **Les mots de passe sont affichés en clair** dans les champs Protéger / Déverrouiller :
   choix assumé, une faute de frappe sur le mot de passe d'un document est pire qu'un
   risque d'épaule.
