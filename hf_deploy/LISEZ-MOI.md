@@ -2,10 +2,10 @@
 
 ## État au 2026-09-13
 
-| Voie | État |
-|---|---|
-| **A** — correctif dans `tuilter/bg-remover-api` | ✅ **DÉPLOYÉ ET VÉRIFIÉ EN PRODUCTION** |
-| **B** — Space dédié `*/pdf-tools-api` | ⛔ préparé et testé, **bloqué** : création de Space refusée en `402` |
+| Voie | État | Adresse |
+|---|---|---|
+| **A** — correctif dans `tuilter/bg-remover-api` | ✅ déployé et vérifié | `pdf.warult-tools.com` |
+| **B** — Space dédié | ✅ **déployé et vérifié** | `warult47/pdf-tools-api` |
 
 ---
 
@@ -42,32 +42,16 @@ python hf_deploy/apply_patch_tuilter.py     # lit le jeton depuis .env
 
 ## B — Space dédié `warult47/pdf-tools-api`
 
-Backend autonome, sans base de données ni authentification, prêt à servir
-`pdf.warult-tools.com`.
-
-**Tout est préparé et vérifié de bout en bout. Seule la création du Space est
-refusée :**
-
-| Compte | Space privé | Space public |
-|---|---|---|
-| `warult47` | `402 Payment Required` | `402 Payment Required` |
-| `tuilter` | `402 Payment Required` | `402 Payment Required` |
-
-`isPro: False` et `canPay: False` sur les deux comptes. HuggingFace facture
-désormais la création de Spaces. Les jetons **peuvent** écrire dans un dépôt
-existant (un modèle et un dataset privés ont été créés puis supprimés pour le
-prouver) : le blocage porte bien sur la création de Spaces.
-
-Un Space **existant** peut être utilisé : passer `--space` au Space de votre choix.
-
-### Publier
+✅ **Déployé et vérifié.**
 
 ```bash
 # 1. Verifier ce qui partira (rien n'est publie)
-python hf_deploy/deploy_space.py --space <compte>/pdf-tools-api --dry-run
+python hf_deploy/deploy_space.py --space warult47/pdf-tools-api --dry-run
 
-# 2. Publier (--create si le Space n'existe pas encore)
-python hf_deploy/deploy_space.py --space <compte>/pdf-tools-api --create
+# 2. Publier. --clean supprime les fichiers absents du paquet :
+#    indispensable pour reprendre un Space existant, sinon les anciens
+#    fichiers restent dans l'image.
+python hf_deploy/deploy_space.py --space warult47/pdf-tools-api --clean
 ```
 
 Le script assemble le contenu à la demande depuis les fichiers versionnés :
@@ -77,20 +61,55 @@ backend/app/                 -> app/
 backend/requirements.txt     -> requirements.txt
 hf_deploy/Dockerfile         -> Dockerfile
 hf_deploy/space_README.md    -> README.md
+hf_deploy/space_dockerignore -> .dockerignore
 ```
 
 Aucune duplication dans le dépôt, donc aucune dérive possible entre le code
 testé et le code déployé.
 
-### Vérifier après publication
+### Historique de l'opération
+
+La création d'un Space est refusée en **`402 Payment Required`** (`isPro: False`,
+`canPay: False`). Le Space a donc été obtenu autrement : `warult47/bg-remover-api`
+existait déjà, en `RUNTIME_ERROR`, figé au 24 juin 2026, sans aucun code PDF.
+Il a été **repris** plutôt que créé :
+
+1. **Passé en public** — `update_repo_settings`, aucune création, donc aucun `402`.
+2. **Renommé** `warult47/pdf-tools-api` — `move_repo`, son ancien nom aurait été
+   trompeur pour du PDF.
+3. **Rempli** avec notre paquet, et **14 fichiers orphelins supprimés** (code
+   `bg_removal`, `billing`, `auth`, `usage`, `image_processing`, `routers/tools`,
+   `queue`, `database`).
+
+**Contrôle fait avant de le rendre public** : aucun secret en clair (aucune clé
+Stripe, aucun jeton, aucune URL de base de données avec mot de passe), et
+**tout son contenu était déjà public** dans `tuilter/bg-remover-api`. Rendre
+public n'a donc rien exposé de nouveau.
+
+### Vérifier
 
 ```bash
-python hf_deploy/verify_deployment.py https://<compte>-pdf-tools-api.hf.space
+python hf_deploy/verify_deployment.py https://warult47-pdf-tools-api.hf.space
 ```
 
-17 vérifications couvrant les dix outils, y compris les pièges : archive ZIP,
-numérotation d'origine des pages, compression effective à chaque niveau, refus
-d'un PDF corrompu, filigrane réellement posé, sens de rotation.
+17 vérifications couvrant les dix outils : archive ZIP, numérotation d'origine
+des pages, compression effective à chaque niveau, refus d'un PDF corrompu,
+filigrane réellement posé, sens de rotation.
+
+### Pour le brancher sur le site
+
+Le Space expose `/api/pdf/*`. Pour que `pdf.warult-tools.com` l'utilise, il faut
+pointer `BACKEND_URL` du projet **Vercel** vers :
+
+```
+https://warult47-pdf-tools-api.hf.space
+```
+
+⚠️ **Ne le faites pas avant d'avoir décidé du sort de `tuilter/bg-remover-api`.**
+Les deux Spaces exposent les mêmes routes PDF : le site fonctionne déjà via
+`tuilter`. Basculer sur le Space dédié **enlèverait l'usage PDF** de `tuilter`,
+mais n'y casserait rien d'autre — ses autres domaines (suppression de fond,
+comptes, facturation) resteraient intacts.
 
 ### Public ou privé ?
 
@@ -98,17 +117,13 @@ d'un PDF corrompu, filigrane réellement posé, sens de rotation.
 
 | Space | Accès anonyme |
 |---|---|
-| `warult47/bg-remover-api` (privé) | **HTTP 404** |
-| `tuilter/bg-remover-api` (public) | HTTP 200 |
+| Space privé | **HTTP 404** |
+| Space public | HTTP 200 |
 
 Le `rewrite` de Vercel qui expose `/api/*` sur `pdf.warult-tools.com` est
 **anonyme** : il n'envoie aucun jeton. Un backend privé rendrait donc les dix
-outils inaccessibles.
-
-C'est sans conséquence ici : le code de PDF-Tools est **déjà public** sur
-`github.com/TasTom/PDF-Tools`. Et si le déploiement reste sur
-`tuilter/bg-remover-api`, il n'y a rien de neuf à exposer — ce Space est déjà
-public par nécessité.
+outils inaccessibles. Et le code de PDF-Tools est **déjà public** sur
+`github.com/TasTom/PDF-Tools` : un Space privé n'apporterait rien.
 
 > Si vous tenez au privé, il faut remplacer le `rewrite` de Vercel par un *Route
 > Handler* qui ajoute l'en-tête `Authorization` — les rewrites de Next.js ne
@@ -120,22 +135,20 @@ public par nécessité.
 
 ### Le correctif A, en production
 
-17/17 via `https://pdf.warult-tools.com`, plus les 5 contrôles spécifiques au
-correctif.
+17/17 via `https://pdf.warult-tools.com`, plus 5 contrôles spécifiques.
 
-### Le paquet B, avant publication
+### Le Space B, en production
 
-Construit et exécuté dans un conteneur, avec le même `Dockerfile` et le même
-contenu que ceux qui seraient publiés :
+17/17 via `https://warult47-pdf-tools-api.hf.space`.
 
 | Contrôle | Résultat |
 |---|---|
-| Construction de l'image | OK |
-| Conteneur | `Up (healthy)` |
-| Les dix outils | **18/18** |
+| Runtime | `RUNNING` |
+| Routes exposées | 12 (les 10 PDF + `/` + `/health`) |
+| Résidus de l'ancien service | **aucun** |
+| Fichiers | 11 |
 | Compression (low / medium / high) | −88 % / −56 % / −42 % |
 | Ratios identiques au poste local | oui |
-| Poids du paquet | 31 Ko, 8 fichiers |
 
 ### La compatibilité des dépendances
 

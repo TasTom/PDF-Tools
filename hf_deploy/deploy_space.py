@@ -9,13 +9,19 @@ versionnes :
     backend/requirements.txt      -> requirements.txt
     hf_deploy/Dockerfile          -> Dockerfile
     hf_deploy/space_README.md     -> README.md
+    hf_deploy/space_dockerignore  -> .dockerignore (si present)
 
 Usage :
-    python hf_deploy/deploy_space.py --space warult47/pdf-tools-api --dry-run
-    python hf_deploy/deploy_space.py --space warult47/pdf-tools-api
+    python hf_deploy/deploy_space.py --space <compte>/<nom> --dry-run
+    python hf_deploy/deploy_space.py --space <compte>/<nom>
+    python hf_deploy/deploy_space.py --space <compte>/<nom> --clean
 
 `--dry-run` assemble et affiche le contenu sans rien publier : a faire en premier
 pour verifier ce qui partirait.
+
+`--clean` supprime du Space tout fichier absent du paquet. Indispensable pour
+reutiliser un Space existant : sans cela, les anciens fichiers restent orphelins.
+Les fichiers geres par HuggingFace (.gitattributes, .gitignore) sont epargnes.
 """
 from __future__ import annotations
 
@@ -29,10 +35,15 @@ RACINE = Path(__file__).resolve().parent.parent
 BACKEND = RACINE / "backend"
 DOCKERFILE = RACINE / "hf_deploy" / "Dockerfile"
 SPACE_README = RACINE / "hf_deploy" / "space_README.md"
+SPACE_DOCKERIGNORE = RACINE / "hf_deploy" / "space_dockerignore"
 
 # Fichiers exclus de l'image : ils ne servent qu'au developpement.
 EXCLUS = {"__pycache__", ".pytest_cache", "tests", "conftest.py", "pytest.ini",
           "requirements-dev.txt", ".venv", ".dockerignore"}
+
+# Fichiers que HuggingFace gere lui-meme : on ne les supprime jamais, meme en
+# mode --clean, sous peine de casser le suivi des fichiers volumineux.
+PRESERVES = {".gitattributes", ".gitignore"}
 
 
 def assemble(destination: Path) -> list[str]:
@@ -61,6 +72,8 @@ def assemble(destination: Path) -> list[str]:
     shutil.copy2(BACKEND / "requirements.txt", destination / "requirements.txt")
     shutil.copy2(DOCKERFILE, destination / "Dockerfile")
     shutil.copy2(SPACE_README, destination / "README.md")
+    if SPACE_DOCKERIGNORE.is_file():
+        shutil.copy2(SPACE_DOCKERIGNORE, destination / ".dockerignore")
 
     return sorted(
         str(chemin.relative_to(destination)).replace("\\", "/")
@@ -75,6 +88,9 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="assembler sans publier")
     parser.add_argument("--create", action="store_true",
                         help="creer le Space s'il n'existe pas (exige un plan payant)")
+    parser.add_argument("--clean", action="store_true",
+                        help="supprimer du Space les fichiers absents du paquet "
+                             "(indispensable pour reutiliser un Space existant)")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="pdf-tools-space-") as temporaire:
@@ -128,7 +144,30 @@ def main() -> None:
             commit_message="deploy: PDF Tools backend",
         )
         print(f"\nPublie : https://huggingface.co/spaces/{args.space}")
-        print("Le Space construit son image automatiquement ; suivre les journaux sur la page.")
+
+        # --- Nettoyage des fichiers orphelins ---
+        if args.clean:
+            presents = set(api.list_repo_files(args.space, repo_type="space"))
+            a_supprimer = sorted(presents - set(fichiers) - PRESERVES)
+
+            if not a_supprimer:
+                print("\n--clean : rien a supprimer, le Space ne contient que le paquet.")
+            else:
+                print(f"\n--clean : {len(a_supprimer)} fichier(s) orphelin(s) a supprimer")
+                for nom in a_supprimer:
+                    print(f"  {nom}")
+                # Fichier par fichier, volontairement : `delete_folder` sur la
+                # racine effacerait aussi le paquet qu'on vient de publier.
+                for nom in a_supprimer:
+                    api.delete_file(
+                        path_in_repo=nom,
+                        repo_id=args.space,
+                        repo_type="space",
+                        commit_message=f"chore: remove orphan file {nom}",
+                    )
+                print(f"  {len(a_supprimer)} fichier(s) supprime(s)")
+
+        print("\nLe Space construit son image automatiquement ; suivre les journaux sur la page.")
 
 
 if __name__ == "__main__":

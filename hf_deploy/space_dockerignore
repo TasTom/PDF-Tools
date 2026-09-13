@@ -1,0 +1,16 @@
+# Contexte de construction du Space.
+# Notre Dockerfile ne copie que `requirements.txt` et `app/`, mais tout ce qui
+# suit serait quand meme envoye au demon.
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+tests/
+.env
+.env.*
+*.db
+*.md
+!requirements.txt
+data/
