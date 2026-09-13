@@ -1,5 +1,4 @@
 """Application configuration."""
-from __future__ import annotations
 import os
 from pathlib import Path
 
@@ -9,25 +8,16 @@ try:
 except ImportError:
     pass
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
-
 class Settings:
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production-min-32-chars!")
-    SITE_URL: str = os.getenv("SITE_URL", "https://pdf.warult-tools.com").strip()
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
-    ALGORITHM: str = "HS256"
-    
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
-        f"sqlite+aiosqlite:///{_BASE_DIR / 'data' / 'app.db'}",
-    ).strip()
-    
-    FREE_DAILY_LIMIT: int = int(os.getenv("FREE_DAILY_LIMIT", "10"))
-    PRO_DAILY_LIMIT: int = int(os.getenv("PRO_DAILY_LIMIT", "500"))
-    
+    # --- Uploads ---
     MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "50"))
     ALLOWED_EXTENSIONS: set[str] = {".pdf", ".png", ".jpg", ".jpeg"}
-    
+
+    # --- Rate limiting (protection anti-abus, par IP) ---
+    # LIGHT : opérations peu coûteuses. HEAVY : conversions gourmandes en CPU.
+    RATE_LIMIT_LIGHT: str = os.getenv("RATE_LIMIT_LIGHT", "20/minute")
+    RATE_LIMIT_HEAVY: str = os.getenv("RATE_LIMIT_HEAVY", "10/minute")
+
     CORS_ORIGINS: list[str] = [
         o.strip()
         for o in os.getenv(

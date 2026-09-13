@@ -1,5 +1,12 @@
 """PDF Tools API — FastAPI application."""
-from __future__ import annotations
+# NE PAS ajouter `from __future__ import annotations` dans ce module.
+# Les annotations deviendraient des chaînes, et FastAPI les résoudrait dans le
+# mauvais espace de noms : `@limiter.limit` enveloppe chaque endpoint, si bien
+# que `inspect.signature` suit `__wrapped__` jusqu'à la fonction d'origine mais
+# évalue ses annotations dans les globales de slowapi, où `UploadFile` n'existe
+# pas. Résultat : `ForwardRef('list[UploadFile]')` non résolu et l'application
+# refuse de démarrer. Python 3.11 (voir hf_deploy/Dockerfile) comprend nativement
+# `list[...]`, l'import est donc inutile ici.
 import io
 import logging
 from contextlib import asynccontextmanager
@@ -12,8 +19,8 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.config import settings
-from app.database import init_db, get_db, engine, User
 from app.services.pdf_processing import (
+    PdfConversionError, build_zip,
     merge_pdfs, split_pdf, compress_pdf, pdf_to_images,
     images_to_pdf, protect_pdf, unprotect_pdf,
     add_watermark_to_pdf, rotate_pdf, crop_pdf,
@@ -22,11 +29,13 @@ from app.services.pdf_processing import (
 logger = logging.getLogger("pdf_tools")
 logging.basicConfig(level=logging.INFO)
 
+# Protection anti-abus, entièrement en mémoire et par adresse IP.
+# Aucune donnée utilisateur n'est conservée et les compteurs repartent de zéro
+# à chaque redémarrage du processus.
 limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
     logger.info("PDF Tools API started")
     yield
     logger.info("PDF Tools API shutting down")
@@ -40,6 +49,12 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(PdfConversionError)
+async def _pdf_conversion_failed(request: Request, exc: PdfConversionError):
+    """Le fichier envoye n'a pas pu etre rendu."""
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 app.add_middleware(
     CORSMiddleware,
@@ -65,23 +80,14 @@ async def root():
 
 @app.get("/health", tags=["health"])
 async def health():
-    db_ok = False
-    db_type = "unknown"
-    try:
-        async with engine.connect() as conn:
-            from sqlalchemy import text
-            await conn.execute(text("SELECT 1"))
-        db_ok = True
-        db_type = "postgresql" if "postgresql" in settings.DATABASE_URL else "sqlite"
-    except Exception:
-        pass
-    return {"status": "ok", "db": "connected" if db_ok else "error", "db_type": db_type}
+    """Sonde de disponibilité, utilisée par le déploiement."""
+    return {"status": "ok"}
 
 
 # ========== PDF Endpoints ==========
 
 @app.post("/api/pdf/merge", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_merge(request: Request, files: list[UploadFile] = File(..., description="PDFs à fusionner")):
     """Fusionner plusieurs fichiers PDF en un seul."""
     if len(files) < 2:
@@ -103,7 +109,7 @@ async def api_merge(request: Request, files: list[UploadFile] = File(..., descri
 
 
 @app.post("/api/pdf/split", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_split(
     request: Request,
     file: UploadFile = File(..., description="PDF à découper"),
@@ -115,22 +121,24 @@ async def api_split(
     result = split_pdf(pdf_bytes, pages if pages else None)
     
     if len(result) == 1:
+        _, data = result[0]
         return StreamingResponse(
-            io.BytesIO(result[0]),
+            io.BytesIO(data),
             media_type="application/pdf",
             headers={"Content-Disposition": 'attachment; filename="split.pdf"'},
         )
     
-    # Return first page as example (full implementation would zip multiple)
+    # Plusieurs pages : une archive, sinon l'utilisateur ne recevrait que la premiere.
+    archive = build_zip([(f"page_{number}.pdf", data) for number, data in result])
     return StreamingResponse(
-        io.BytesIO(result[0]),
-        media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="page_1.pdf"'},
+        io.BytesIO(archive),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="pages.zip"'},
     )
 
 
 @app.post("/api/pdf/compress", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_compress(
     request: Request,
     file: UploadFile = File(..., description="PDF à compresser"),
@@ -155,7 +163,7 @@ async def api_compress(
 
 
 @app.post("/api/pdf/to-image", tags=["PDF"])
-@limiter.limit("10/minute")
+@limiter.limit(settings.RATE_LIMIT_HEAVY)
 async def api_to_image(
     request: Request,
     file: UploadFile = File(..., description="PDF à convertir"),
@@ -167,21 +175,29 @@ async def api_to_image(
     pdf_bytes = await file.read()
     images = pdf_to_images(pdf_bytes, format, dpi)
     
-    if not images:
-        raise HTTPException(400, "Aucune page trouvée dans le PDF")
-    
-    # Return first page
     mime = "image/jpeg" if format == "jpeg" else "image/png"
     ext = "jpg" if format == "jpeg" else "png"
+    
+    if len(images) == 1:
+        return StreamingResponse(
+            io.BytesIO(images[0]),
+            media_type=mime,
+            headers={"Content-Disposition": f'attachment; filename="page_1.{ext}"'},
+        )
+    
+    # Plusieurs pages : une archive, sinon l'utilisateur ne recevrait que la premiere.
+    archive = build_zip(
+        [(f"page_{index}.{ext}", data) for index, data in enumerate(images, start=1)]
+    )
     return StreamingResponse(
-        io.BytesIO(images[0]),
-        media_type=mime,
-        headers={"Content-Disposition": f'attachment; filename="page_1.{ext}"'},
+        io.BytesIO(archive),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="pages.zip"'},
     )
 
 
 @app.post("/api/pdf/from-images", tags=["PDF"])
-@limiter.limit("10/minute")
+@limiter.limit(settings.RATE_LIMIT_HEAVY)
 async def api_from_images(request: Request, files: list[UploadFile] = File(..., description="Images à convertir en PDF")):
     """Créer un PDF à partir de plusieurs images."""
     if len(files) > 50:
@@ -201,7 +217,7 @@ async def api_from_images(request: Request, files: list[UploadFile] = File(..., 
 
 
 @app.post("/api/pdf/protect", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_protect(
     request: Request,
     file: UploadFile = File(..., description="PDF à protéger"),
@@ -219,7 +235,7 @@ async def api_protect(
 
 
 @app.post("/api/pdf/unprotect", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_unprotect(
     request: Request,
     file: UploadFile = File(..., description="PDF protégé à déverrouiller"),
@@ -240,7 +256,7 @@ async def api_unprotect(
 
 
 @app.post("/api/pdf/watermark", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_watermark(
     request: Request,
     file: UploadFile = File(..., description="PDF à filigraner"),
@@ -259,7 +275,7 @@ async def api_watermark(
 
 
 @app.post("/api/pdf/rotate", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_rotate(
     request: Request,
     file: UploadFile = File(..., description="PDF à pivoter"),
@@ -278,7 +294,7 @@ async def api_rotate(
 
 
 @app.post("/api/pdf/crop", tags=["PDF"])
-@limiter.limit("20/minute")
+@limiter.limit(settings.RATE_LIMIT_LIGHT)
 async def api_crop(
     request: Request,
     file: UploadFile = File(..., description="PDF à recadrer"),
