@@ -2,37 +2,94 @@
 
 ## État au 2026-09-13
 
-| Voie | État | Adresse |
+| Élément | État | Adresse |
 |---|---|---|
-| **A** — correctif dans `tuilter/bg-remover-api` | ✅ déployé et vérifié | `pdf.warult-tools.com` |
-| **B** — Space dédié | ✅ **déployé et vérifié** | `warult47/pdf-tools-api` |
+| **A** — correctif dans `tuilter/bg-remover-api` | appliqué (n'est plus utilisé par le site) | — |
+| **B** — Space dédié | ✅ **en service** | `warult47/pdf-tools-api.hf.space` |
+| **Frontend** | ✅ **redéployé** sur Vercel | `pdf.warult-tools.com` |
+| **C** — passer `tuilter` en privé | ⛔ **IMPOSSIBLE** | voir plus bas |
+
+---
+
+## Le site tourne désormais sur le Space dédié
+
+`pdf.warult-tools.com` n'utilise **plus** `tuilter`. La bascule a été faite :
+
+1. Ajout de la variable `BACKEND_URL` sur le projet Vercel **`pdf-tools`**
+   → `https://warult47-pdf-tools-api.hf.space`
+2. Déploiement du frontend (`vercel deploy --prod` depuis `frontend/`)
+
+⚠️ `BACKEND_URL` est lue **au moment de la construction** (`next.config.js` est
+évalué au build, car le rewrite en dépend). **Toute modification de cette
+variable exige donc un nouveau déploiement** pour prendre effet.
+
+### Vérifié en production
+
+| Contrôle | Résultat |
+|---|---|
+| Les dix outils via `pdf.warult-tools.com` | **17/17** |
+| Nouvelle direction artistique servie | oui (titre, `WARULT`, `Réunir`, `Verrouiller`) |
+| Marqueurs de l'ancienne version | **0** (plus d'emoji, de dégradé, de page Tarifs) |
+| `/sitemap.xml`, `/robots.txt`, `/icon.svg` | `200` |
+| `/pricing` | `404` (retirée, comme voulu) |
+
+### Taille d'envoi : la limite de Vercel ne s'applique pas
+
+Vercel plafonne normalement le corps des requêtes à 4,5 Mo pour les fonctions
+serverless. Mesuré : **ce n'est pas le cas ici**, le rewrite `/api/*` passe par
+le proxy et non par une fonction.
+
+| Envoi | Résultat |
+|---|---|
+| 2,6 Mo | `200` |
+| 7,7 Mo | `200` |
+| 16,3 Mo | `200` |
+| 37,8 Mo | `200` (23,5 s) |
+| 60,3 Mo | `400 Fichier trop volumineux (max 50MB)` |
+| 68,9 Mo | `400 Fichier trop volumineux (max 50MB)` |
+
+La limite de 50 Mo est donc appliquée **exactement** comme documentée, de bout en
+bout. Reproduire :
+
+```bash
+python hf_deploy/check_body_limit.py https://pdf.warult-tools.com
+```
+
+---
+
+## ⛔ C — passer `tuilter/bg-remover-api` en privé est impossible
+
+**Ce n'est pas un problème de droits : c'est une dépendance.**
+
+`warult-tools.com` — l'autre produit (suppression de fond, 14 outils image) —
+appelle ce Space **directement depuis le navigateur**. Preuve : l'URL
+`tuilter-bg-remover-api.hf.space` figure dans le bundle
+`layout-6454ad7614eda900.js`, via la variable Vercel `NEXT_PUBLIC_API_URL`.
+
+Or un Space privé répond `404` aux requêtes anonymes (mesuré). Le passer en privé
+**casserait le produit principal**, pas seulement les PDF.
+
+### Ce qu'il faudrait pour y arriver
+
+Créer un **second** Space dédié à `warult-tools.com` (il lui faut rembg, OpenCV,
+onnxruntime, Stripe, une base PostgreSQL — pas notre backend PDF). Or la création
+d'un Space est refusée en `402` sur les deux comptes.
+
+**En l'état, `tuilter/bg-remover-api` doit rester public.**
 
 ---
 
 ## A — Correctif appliqué à `tuilter/bg-remover-api`
 
-Publié le 2026-09-13. Trois fichiers remplacés dans le Space existant :
+Publié le 2026-09-13, avant la bascule. Trois fichiers remplacés :
 `app/services/pdf_processing.py`, `app/routers/pdf_tools.py` et `requirements.txt`.
 Le reste du Space (suppression de fond, facturation, comptes, outils image)
 n'a **pas** été touché.
 
-### Vérifié en production, via `https://pdf.warult-tools.com`
+Ce correctif reste utile si `warult-tools.com` venait à exposer des outils PDF,
+mais **le site PDF ne passe plus par là**.
 
-| Comportement | Avant | Après |
-|---|---|---|
-| `to-image` sur 3 pages | 1 PNG | **archive ZIP `pages.zip`** |
-| `compress` sur un scan | **0 %** aux trois niveaux | **−88 % / −56 % / −42 %** |
-| PDF corrompu | page blanche silencieuse | **`422` explicite** |
-| Les dix outils | — | **17/17** |
-
-Reproduire la vérification :
-
-```bash
-python hf_deploy/check_production.py https://pdf.warult-tools.com
-python hf_deploy/verify_deployment.py https://pdf.warult-tools.com
-```
-
-Pour rejouer le correctif (si le Space était restauré à une version antérieure) :
+Pour le rejouer (si le Space était restauré à une version antérieure) :
 
 ```bash
 python hf_deploy/apply_patch_tuilter.py     # lit le jeton depuis .env
@@ -42,7 +99,7 @@ python hf_deploy/apply_patch_tuilter.py     # lit le jeton depuis .env
 
 ## B — Space dédié `warult47/pdf-tools-api`
 
-✅ **Déployé et vérifié.**
+✅ En service, utilisé par `pdf.warult-tools.com`.
 
 ```bash
 # 1. Verifier ce qui partira (rien n'est publie)
@@ -90,81 +147,53 @@ public n'a donc rien exposé de nouveau.
 
 ```bash
 python hf_deploy/verify_deployment.py https://warult47-pdf-tools-api.hf.space
+python hf_deploy/verify_deployment.py https://pdf.warult-tools.com
 ```
 
 17 vérifications couvrant les dix outils : archive ZIP, numérotation d'origine
 des pages, compression effective à chaque niveau, refus d'un PDF corrompu,
 filigrane réellement posé, sens de rotation.
 
-### Pour le brancher sur le site
+---
 
-Le Space expose `/api/pdf/*`. Pour que `pdf.warult-tools.com` l'utilise, il faut
-pointer `BACKEND_URL` du projet **Vercel** vers :
+## Le frontend
 
+Le projet Vercel **`pdf-tools`** sert `pdf.warult-tools.com`. Il n'est **pas
+relié à GitHub** : un `git push` ne déclenche aucun déploiement. Publier
+demande :
+
+```bash
+cd frontend
+vercel deploy --prod --yes --project pdf-tools
 ```
-https://warult47-pdf-tools-api.hf.space
+
+Retour arrière immédiat si besoin :
+
+```bash
+vercel rollback --project pdf-tools
 ```
 
-⚠️ **Ne le faites pas avant d'avoir décidé du sort de `tuilter/bg-remover-api`.**
-Les deux Spaces exposent les mêmes routes PDF : le site fonctionne déjà via
-`tuilter`. Basculer sur le Space dédié **enlèverait l'usage PDF** de `tuilter`,
-mais n'y casserait rien d'autre — ses autres domaines (suppression de fond,
-comptes, facturation) resteraient intacts.
+### Deux projets Vercel à ne pas confondre
 
-### Public ou privé ?
-
-**Un Space privé ne peut pas servir le site.** Mesuré :
-
-| Space | Accès anonyme |
-|---|---|
-| Space privé | **HTTP 404** |
-| Space public | HTTP 200 |
-
-Le `rewrite` de Vercel qui expose `/api/*` sur `pdf.warult-tools.com` est
-**anonyme** : il n'envoie aucun jeton. Un backend privé rendrait donc les dix
-outils inaccessibles. Et le code de PDF-Tools est **déjà public** sur
-`github.com/TasTom/PDF-Tools` : un Space privé n'apporterait rien.
-
-> Si vous tenez au privé, il faut remplacer le `rewrite` de Vercel par un *Route
-> Handler* qui ajoute l'en-tête `Authorization` — les rewrites de Next.js ne
-> permettent pas d'injecter un en-tête.
+| Projet | Site | Dépôt |
+|---|---|---|
+| `pdf-tools` | `pdf.warult-tools.com` | **ce dépôt** (`PDF-Tools`) |
+| `warult-tools` | `warult-tools.com` | `Background_remover` |
 
 ---
 
 ## Ce qui a été vérifié
 
-### Le correctif A, en production
-
-17/17 via `https://pdf.warult-tools.com`, plus 5 contrôles spécifiques.
-
-### Le Space B, en production
-
-17/17 via `https://warult47-pdf-tools-api.hf.space`.
-
 | Contrôle | Résultat |
 |---|---|
-| Runtime | `RUNNING` |
-| Routes exposées | 12 (les 10 PDF + `/` + `/health`) |
-| Résidus de l'ancien service | **aucun** |
-| Fichiers | 11 |
-| Compression (low / medium / high) | −88 % / −56 % / −42 % |
-| Ratios identiques au poste local | oui |
-
-### La compatibilité des dépendances
-
-Le vrai risque du correctif A était de casser le Space en modifiant
-`requirements.txt`. Vérifié dans `python:3.11-slim`, exactement comme son
-`Dockerfile` :
-
-- `pip install --dry-run` sur **tout** leur fichier modifié → **code de sortie 0, aucun conflit** (`rembg`, `opencv`, `stripe`, `onnxruntime` cohabitent avec `pypdf`, `pikepdf`, `pypdfium2`)
-- `PyPDF2` et `pdf2image` n'étaient importés que par le fichier remplacé
-- Rendus PDF réels sous Linux : 3 pages, 1 % d'encre, écriture et compression OK
-
-Ces ratios identiques entre Windows et le conteneur Linux confirment que
-`pypdfium2` et `pikepdf` (modules natifs) se comportent de la même façon des deux
-côtés.
+| Les dix outils en production | **17/17** |
+| Nouvelle DA servie | oui |
+| Limite de 50 Mo de bout en bout | exacte |
+| Space dédié | `RUNNING`, 12 routes, aucun résidu |
+| Ratios de compression Windows / Linux | identiques (−88 / −56 / −42 %) |
+| Compilation du frontend | 14 pages, types validés |
 
 ### Ce qui n'a pas été vérifié
 
-Le temps de démarrage réel côté HuggingFace, et le comportement après une mise
-en veille. Le conteneur, lui, démarre et répond en moins de dix secondes en local.
+Le temps de démarrage réel côté HuggingFace après une mise en veille. Le
+conteneur, lui, démarre et répond en moins de dix secondes en local.
