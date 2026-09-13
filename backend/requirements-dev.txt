@@ -1,0 +1,8 @@
+# Dependances de developpement (tests).
+# A installer en plus de requirements.txt :
+#     pip install -r requirements.txt -r requirements-dev.txt
+#
+# httpx est requis par le TestClient de Starlette, qui fait tourner l'application
+# en memoire : les tests n'ont besoin d'aucun serveur lance.
+pytest>=8.0
+httpx>=0.27
