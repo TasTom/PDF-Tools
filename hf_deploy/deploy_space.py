@@ -122,6 +122,21 @@ def main() -> None:
 
         api = HfApi()
 
+        # Le compte qui agit est affiche : les deux Spaces de ce projet
+        # appartiennent a deux comptes HuggingFace differents, et deposer avec
+        # le jeton de l'un sur l'espace de l'autre echoue en 403 avec un message
+        # qui ne dit pas quel compte a ete utilise.
+        try:
+            moi = api.whoami().get("name", "?")
+            print(f"\nCompte HuggingFace : {moi}")
+            if not args.space.startswith(f"{moi}/"):
+                print(f"  ATTENTION : le Space appartient a '{args.space.split('/')[0]}', "
+                      "pas a ce compte.")
+                print("  Verifier HF_TOKEN, ou retirer la variable pour utiliser le "
+                      "jeton du cache local ('hf auth switch').")
+        except Exception as exc:
+            print(f"\nCompte HuggingFace : indetermine ({type(exc).__name__})")
+
         try:
             info = api.space_info(args.space)
             print(f"\nSpace existant : {args.space} (prive={info.private})")

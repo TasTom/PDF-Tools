@@ -19,37 +19,24 @@ Lancer depuis `backend/` :
 import io
 import os
 import zipfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from jose import jwt
 from PIL import Image
 from pypdf import PdfReader
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-from starlette.testclient import TestClient
 
 from app.config import settings
-from app.main import app, limiter
+from app.rate_limit import limiter
 
 PDF_MIME = "application/pdf"
 
-
-@pytest.fixture(autouse=True)
-def _reset_rate_limits():
-    """Remet les compteurs a zero : sans cela, les tests dependraient de l'ordre.
-
-    Le limiteur compte par adresse IP et le TestClient est toujours la meme :
-    sans reinitialisation, le test de limite ferait echouer tous les suivants.
-    """
-    limiter.reset()
-    yield
-    limiter.reset()
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as test_client:
-        yield test_client
+# Les fixtures `client` (authentifie), `anon_client` et la remise a zero des
+# compteurs vivent dans `conftest.py`. Ne PAS les redefinir ici : une fixture
+# locale masque celle de conftest, et le client perdrait son authentification.
 
 
 # --------------------------------------------------------------------------
@@ -193,7 +180,8 @@ def test_merge_combines_pages_in_order(client):
     assert response.status_code == 200
     assert response.headers["content-type"] == PDF_MIME
     assert page_count(response.content) == 3
-    assert "merged.pdf" in response.headers["content-disposition"]
+    # Le nom du resultat reprend celui du PREMIER fichier envoye.
+    assert "a-fusionne.pdf" in response.headers["content-disposition"]
 
     # Le contenu doit suivre l'ordre d'envoi : A1, A2, puis B1. Sans cette
     # verification, une inversion d'ordre passerait inapercue.
@@ -202,6 +190,51 @@ def test_merge_combines_pages_in_order(client):
     assert "AAA page 1" in texts[0]
     assert "AAA page 2" in texts[1]
     assert "BBB page 1" in texts[2]
+
+
+def test_every_tool_names_its_output_after_the_input(client):
+    """Le fichier renvoye porte le nom de celui envoye, pas « output.pdf ».
+
+    Repondre systematiquement « compressed.pdf » obligeait l'utilisateur a
+    renommer le resultat a la main, alors que le nom d'origine est justement
+    l'information qu'il connait deja.
+
+    Les cas choisis verifient aussi la mise en forme : espace, accent, et
+    absence d'extension exploitable. Un espace ou un accent laisse tel quel
+    casserait l'en-tete `Content-Disposition`.
+    """
+    cas = (
+        ("compress", {"file": as_pdf(make_pdf(1), "facture-mars.pdf")},
+         {"quality": "medium"}, "facture-mars-compresse.pdf"),
+        ("rotate", {"file": as_pdf(make_pdf(1), "scan 2026.pdf")},
+         {"angle": "90"}, "scan-2026-pivote.pdf"),
+        ("protect", {"file": as_pdf(make_pdf(1), "ete 2026.pdf")},
+         {"password": "secret"}, "ete-2026-protege.pdf"),
+    )
+
+    for outil, fichiers, donnees, attendu in cas:
+        reponse = client.post(f"/api/pdf/{outil}", files=fichiers, data=donnees)
+        assert reponse.status_code == 200, outil
+        entete = reponse.headers["content-disposition"]
+        assert attendu in entete, f"{outil} : {entete}"
+        # Exactement deux guillemets : un nom mal echappe scinderait l'en-tete.
+        assert entete.count('"') == 2, entete
+        assert " " not in entete.split("filename=")[-1], f"espace laisse dans le nom : {entete}"
+
+
+def test_an_unusable_name_falls_back_to_a_neutral_one(client):
+    """Un nom reduit a neant ne doit pas produire « -compresse.pdf ».
+
+    « ***.pdf » passe la validation (l'extension est bonne) mais son radical ne
+    contient aucun caractere conservable : il ne doit pas rester de tiret orphelin.
+    """
+    reponse = client.post(
+        "/api/pdf/compress",
+        files={"file": as_pdf(make_pdf(1), "***.pdf")},
+        data={"quality": "medium"},
+    )
+    assert reponse.status_code == 200
+    assert "document-compresse.pdf" in reponse.headers["content-disposition"]
 
 
 def test_merge_needs_at_least_two_files(client):
@@ -215,7 +248,7 @@ def test_split_returns_zip_named_after_original_pages(client):
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
-    assert "pages.zip" in response.headers["content-disposition"]
+    assert "fichier-pages.zip" in response.headers["content-disposition"]
 
     pages = in_zip(response.content)
     assert list(pages) == ["page_1.pdf", "page_2.pdf", "page_3.pdf"]
@@ -486,8 +519,14 @@ def test_crop_applies_the_requested_box(client):
 # Protection anti-abus
 # --------------------------------------------------------------------------
 
-def test_rate_limit_returns_429_past_the_threshold(client):
-    """La limite annoncee dans le README doit etre vraiment appliquee."""
+def test_rate_limit_returns_429_past_the_threshold(client, monkeypatch):
+    """La limite de debit annoncee dans le README doit etre vraiment appliquee.
+
+    Le quota quotidien est releve pour que l'échec n'ait qu'une seule cause
+    possible : sans cela, les deux mecanismes refusent au meme moment et le test
+    ne prouve rien sur le limiteur.
+    """
+    monkeypatch.setattr(settings, "DAILY_LIMIT", 10_000)
     payload = {"file": as_pdf(make_pdf(1))}
     codes = [
         client.post("/api/pdf/crop", files=payload, data={"x": "0", "y": "0", "w": "595", "h": "842"}).status_code
@@ -499,7 +538,7 @@ def test_rate_limit_returns_429_past_the_threshold(client):
     assert codes[allowed] == 429
 
 
-def test_rate_limit_counts_per_forwarded_client_not_per_proxy(client):
+def test_rate_limit_counts_per_forwarded_client_not_per_proxy(client, monkeypatch):
     """Deux clients distincts derriere un meme proxy ne partagent pas de compteur.
 
     Ce test vient d'un defaut constate EN PRODUCTION : la cle etait
@@ -511,7 +550,11 @@ def test_rate_limit_counts_per_forwarded_client_not_per_proxy(client):
     Le comportement corrige est verifie sur DEUX aspects :
     - des `X-Forwarded-For` differents sont comptes separement ;
     - un `X-Forwarded-For` qui varie ne fait PAS repartir le compteur.
+
+    Le quota quotidien est volontairement releve : sans cela, il bloquerait la
+    suite du test et on ne saurait pas lequel des deux mecanismes a refuse.
     """
+    monkeypatch.setattr(settings, "DAILY_LIMIT", 10_000)
     payload = {"file": as_pdf(make_pdf(1))}
     formulaire = {"x": "0", "y": "0", "w": "595", "h": "842"}
     allowed = int(settings.RATE_LIMIT_LIGHT.split("/")[0])
@@ -539,3 +582,265 @@ def test_rate_limit_counts_per_forwarded_client_not_per_proxy(client):
 def test_health_is_not_rate_limited(client):
     """La sonde de deploiement ne doit jamais etre bloquee par le limiteur."""
     assert all(client.get("/health").status_code == 200 for _ in range(30))
+
+
+# --------------------------------------------------------------------------
+# Authentification
+# --------------------------------------------------------------------------
+
+def test_tools_require_an_account(raw_client):
+    """Les outils ne doivent pas repondre a un visiteur sans compte.
+
+    C'est le changement de fond de cette version : le quota quotidien est indexe
+    sur le compte, donc sans compte il n'y a rien a compter.
+    """
+    for chemin, donnees in [
+        ("/api/pdf/merge", {"files": as_pdf(make_pdf(1))}),
+        ("/api/pdf/split", {"file": as_pdf(make_pdf(1))}),
+        ("/api/pdf/compress", {"file": as_pdf(make_pdf(1))}),
+        ("/api/pdf/rotate", {"file": as_pdf(make_pdf(1))}),
+        ("/api/pdf/crop", {"file": as_pdf(make_pdf(1))}),
+        ("/api/pdf/watermark", {"file": as_pdf(make_pdf(1))}),
+    ]:
+        reponse = raw_client.post(chemin, files=donnees,
+                                  data={"text": "X", "password": "abc", "angle": "90",
+                                        "x": "0", "y": "0", "w": "595", "h": "842"})
+        assert reponse.status_code == 401, f"{chemin} a repondu {reponse.status_code} sans compte"
+
+    assert raw_client.get("/api/usage").status_code == 401
+
+
+def test_register_returns_a_usable_token(raw_client):
+    identifiant = os.urandom(4).hex()
+    reponse = raw_client.post("/api/auth/register", json={
+        "email": f"nouveau-{identifiant}@example.com",
+        "username": f"nouveau{identifiant}",
+        "password": "MotDePasse1",
+    })
+    assert reponse.status_code == 201, reponse.text
+    corps = reponse.json()
+    assert corps["token_type"] == "bearer"
+    assert corps["user"]["daily_usage"] == 0
+    assert corps["user"]["daily_limit"] == settings.DAILY_LIMIT
+
+    # Le jeton doit reellement ouvrir une session.
+    profil = raw_client.get("/api/auth/me", headers={"Authorization": f"Bearer {corps['access_token']}"})
+    assert profil.status_code == 200
+    assert profil.json()["email"] == f"nouveau-{identifiant}@example.com"
+
+
+def test_register_refuses_a_weak_password(raw_client):
+    """Un mot de passe faible doit etre refuse AVANT de creer le compte."""
+    for mot_de_passe, raison in [
+        ("court1A", "moins de 8 caracteres"),
+        ("sansmajuscule1", "aucune majuscule"),
+        ("SansChiffre", "aucun chiffre"),
+    ]:
+        reponse = raw_client.post("/api/auth/register", json={
+            "email": f"faible-{os.urandom(3).hex()}@example.com",
+            "username": f"faible{os.urandom(3).hex()}",
+            "password": mot_de_passe,
+        })
+        assert reponse.status_code == 422, f"{raison} : accepte a tort"
+
+
+def test_register_refuses_a_duplicate_email_or_username(raw_client):
+    identifiant = os.urandom(4).hex()
+    donnees = {
+        "email": f"double-{identifiant}@example.com",
+        "username": f"double{identifiant}",
+        "password": "MotDePasse1",
+    }
+    assert raw_client.post("/api/auth/register", json=donnees).status_code == 201
+
+    meme_email = {**donnees, "username": f"autre{identifiant}"}
+    assert raw_client.post("/api/auth/register", json=meme_email).status_code == 409
+
+    meme_nom = {**donnees, "email": f"autre-{identifiant}@example.com"}
+    assert raw_client.post("/api/auth/register", json=meme_nom).status_code == 409
+
+
+def test_login_accepts_the_right_password_and_refuses_the_wrong_one(raw_client):
+    identifiant = os.urandom(4).hex()
+    email = f"connexion-{identifiant}@example.com"
+    raw_client.post("/api/auth/register", json={
+        "email": email,
+        "username": f"connexion{identifiant}",
+        "password": "MotDePasse1",
+    })
+
+    bon = raw_client.post("/api/auth/login", json={"email": email, "password": "MotDePasse1"})
+    assert bon.status_code == 200
+    assert bon.json()["access_token"]
+
+    faux = raw_client.post("/api/auth/login", json={"email": email, "password": "MauvaisMot1"})
+    assert faux.status_code == 401
+
+    inconnu = raw_client.post("/api/auth/login", json={
+        "email": f"jamais-vu-{identifiant}@example.com", "password": "MotDePasse1",
+    })
+    # Meme code que pour un mauvais mot de passe : sinon on peut enumerer les
+    # comptes existants.
+    assert inconnu.status_code == 401
+    assert inconnu.json()["detail"] == faux.json()["detail"]
+
+
+def test_a_forged_token_is_refused(raw_client):
+    for mauvais in ("pas-un-jeton", "eyJhbGciOiJIUzI1NiJ9.faux.signature"):
+        reponse = raw_client.get("/api/auth/me", headers={"Authorization": f"Bearer {mauvais}"})
+        assert reponse.status_code == 401, f"jeton falsifie accepte : {mauvais}"
+
+
+def test_a_token_from_another_service_is_refused(raw_client):
+    """Un jeton signe avec la MEME cle mais emis par un autre service.
+
+    C'est le cas reel de ce deploiement : le Space a herite de la SECRET_KEY du
+    gabarit commun aux deux produits. Sans controle de l'emetteur et du
+    destinataire, un compte cree sur l'autre site ouvrirait ici le compte portant
+    le meme identifiant, puisque les deux services signent avec la meme cle.
+    """
+    identifiant = str(abs(hash(("autre-service", settings.SECRET_KEY))) % 10**6)
+    email = f"autre-{identifiant}@example.com"
+    inscrit = raw_client.post("/api/auth/register", json={
+        "email": email, "username": f"autre{identifiant}", "password": "MotDePasse1",
+    })
+    assert inscrit.status_code == 201
+    vrai_jeton = inscrit.json()["access_token"]
+    assert raw_client.get("/api/auth/me", headers={"Authorization": f"Bearer {vrai_jeton}"}).status_code == 200
+
+    maintenant = datetime.now(timezone.utc)
+    commun = {"sub": inscrit.json()["user"]["id"], "exp": maintenant + timedelta(hours=1), "iat": maintenant}
+
+    sans_audience = jwt.encode(commun, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    audience_etrangere = jwt.encode(
+        {**commun, "iss": "warult-tools", "aud": "bg-remover-api"},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+    for etranger in (sans_audience, audience_etrangere):
+        reponse = raw_client.get("/api/auth/me", headers={"Authorization": f"Bearer {etranger}"})
+        assert reponse.status_code == 401, "jeton d'un autre service accepte"
+
+
+# --------------------------------------------------------------------------
+# Quota quotidien
+# --------------------------------------------------------------------------
+
+def test_usage_reports_the_quota(client):
+    reponse = client.get("/api/usage")
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert set(corps) == {"daily_usage", "daily_limit", "remaining"}
+    assert corps["daily_limit"] == settings.DAILY_LIMIT
+    assert corps["remaining"] == settings.DAILY_LIMIT - corps["daily_usage"]
+
+
+def test_an_operation_is_counted(client):
+    avant = client.get("/api/usage").json()["daily_usage"]
+    reponse = client.post("/api/pdf/rotate", files={"file": as_pdf(make_pdf(1))}, data={"angle": "90"})
+    assert reponse.status_code == 200
+    apres = client.get("/api/usage").json()["daily_usage"]
+    assert apres == avant + 1
+
+
+def test_a_refused_file_does_not_cost_an_operation(client):
+    """Valider AVANT de compter : un fichier refuse ne doit pas consommer le quota."""
+    avant = client.get("/api/usage").json()["daily_usage"]
+    reponse = client.post("/api/pdf/rotate", files={"file": ("notes.txt", b"texte", "text/plain")})
+    assert reponse.status_code == 400
+    assert client.get("/api/usage").json()["daily_usage"] == avant
+
+
+def test_the_quota_stops_the_operations(client, monkeypatch):
+    """Une fois le quota atteint, l'API refuse et le dit clairement."""
+    monkeypatch.setattr(settings, "DAILY_LIMIT", 3)
+
+    for index in range(3):
+        reponse = client.post("/api/pdf/rotate", files={"file": as_pdf(make_pdf(1))}, data={"angle": "90"})
+        assert reponse.status_code == 200, f"operation {index + 1} refusee a tort"
+
+    refus = client.post("/api/pdf/rotate", files={"file": as_pdf(make_pdf(1))}, data={"angle": "90"})
+    assert refus.status_code == 429
+    assert "Limite quotidienne" in refus.json()["detail"]
+
+    # Et le refus ne fait pas repartir le compteur.
+    assert client.get("/api/usage").json()["remaining"] == 0
+
+
+def test_the_quota_is_global_not_per_tool(client, monkeypatch):
+    """Le quota couvre TOUTES les operations, pas une seule.
+
+    Sinon il suffirait de changer d'outil pour le contourner : c'est justement
+    ce que faisait l'ancienne limitation, qui comptait 20/minute par endpoint.
+    """
+    monkeypatch.setattr(settings, "DAILY_LIMIT", 3)
+
+    # Trois outils DIFFERENTS consomment le meme quota.
+    assert client.post("/api/pdf/rotate", files={"file": as_pdf(make_pdf(1))}, data={"angle": "90"}).status_code == 200
+    assert client.post("/api/pdf/crop", files={"file": as_pdf(make_pdf(1))},
+                       data={"x": "0", "y": "0", "w": "300", "h": "400"}).status_code == 200
+    assert client.post("/api/pdf/watermark", files={"file": as_pdf(make_pdf(1))},
+                       data={"text": "X", "opacity": "0.3"}).status_code == 200
+
+    # Un quatrieme outil, encore jamais utilise, doit etre refuse.
+    quatrieme = client.post("/api/pdf/compress", files={"file": as_pdf(make_pdf(1))},
+                            data={"quality": "medium"})
+    assert quatrieme.status_code == 429, "le quota ne couvre pas tous les outils"
+
+
+# --------------------------------------------------------------------------
+# Connexion a la base de donnees
+# --------------------------------------------------------------------------
+
+def test_the_database_url_receives_an_async_driver():
+    """Le secret DATABASE_URL arrive en forme synchrone, le pilote est impose ici.
+
+    Cas reel : le Space a herite d'un `DATABASE_URL` en `postgresql://...`.
+    SQLAlchemy en deduisait `psycopg2`, absent de l'image, et le service ne
+    demarrait plus — sans que rien n'indique que le prefixe etait en cause.
+    """
+    from app.database import url_asynchrone
+
+    assert url_asynchrone("postgresql://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
+    assert url_asynchrone("postgres://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
+    assert url_asynchrone("sqlite:///./data/app.db") == "sqlite+aiosqlite:///./data/app.db"
+    assert url_asynchrone("  postgresql://u:p@h/db  ") == "postgresql+asyncpg://u:p@h/db"
+
+    # Une URL qui nomme deja son pilote est laissee intacte : la reecrire
+    # reviendrait a decider a la place de celui qui l'a remplie.
+    for deja in ("postgresql+asyncpg://u:p@h/db", "sqlite+aiosqlite:///./x.db"):
+        assert url_asynchrone(deja) == deja
+
+
+def test_libpq_options_are_removed_from_the_url():
+    """asyncpg refuse les options libpq : elles doivent quitter l'URL.
+
+    Deuxieme panne reelle du meme deploiement : l'URL Neon contient
+    `?sslmode=require&channel_binding=require`, et asyncpg les transmet comme
+    arguments de `connect()`, d'ou
+    « connect() got an unexpected keyword argument 'sslmode' ».
+    """
+    from app.database import _nettoyer
+
+    propre, options = _nettoyer(
+        "postgresql+asyncpg://u:p@h/db?sslmode=require&channel_binding=require"
+    )
+    assert "sslmode" not in propre
+    assert "channel_binding" not in propre
+    assert options["ssl"] is True
+    # Une URL nettoyee ne sert a rien si le mot de passe a disparu au passage.
+    assert "p@h" in propre
+
+    # « disable » demande explicitement une connexion en clair.
+    _, sans_tls = _nettoyer("postgresql+asyncpg://u:p@h/db?sslmode=disable")
+    assert sans_tls["ssl"] is False
+
+    # Les autres parametres ne sont pas touches : ils peuvent porter du sens.
+    conserve, _ = _nettoyer("postgresql+asyncpg://u:p@h/db?application_name=pdf")
+    assert "application_name=pdf" in conserve
+
+    # SQLite ne passe pas par ce chemin et ressort inchange.
+    inchange, vide = _nettoyer("sqlite+aiosqlite:///./data/app.db")
+    assert inchange == "sqlite+aiosqlite:///./data/app.db"
+    assert vide == {}

@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { IBM_Plex_Mono, IBM_Plex_Sans } from 'next/font/google';
 
-import ToolIndex from '@/components/ToolIndex';
+import SiteHeader from '@/components/SiteHeader';
+import { AuthProvider } from '@/lib/auth';
 import { SITE_URL } from '@/lib/site';
 import './globals.css';
 
@@ -39,7 +39,7 @@ export const metadata: Metadata = {
   },
   alternates: { canonical: '/' },
   description:
-    'Fusionner, découper, compresser, convertir, protéger vos PDF. Dix outils gratuits, sans compte. Les fichiers sont traités le temps de l’opération, puis oubliés.',
+    'Fusionner, découper, compresser, convertir, protéger vos PDF. Dix outils gratuits, dans la limite d’un quota quotidien. Les fichiers sont traités le temps de l’opération, puis oubliés.',
   keywords: [
     'pdf', 'fusionner pdf', 'compresser pdf', 'découper pdf',
     'convertir pdf en image', 'protéger pdf', 'filigrane pdf',
@@ -50,7 +50,7 @@ export const metadata: Metadata = {
     url: SITE_URL,
     siteName: 'PDF Tools',
     title: 'PDF Tools — dix opérations sur un document',
-    description: 'Dix outils PDF gratuits, sans compte ni stockage.',
+    description: 'Dix outils PDF gratuits, dans la limite d’un quota quotidien.',
   },
 };
 
@@ -58,31 +58,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="fr" className={`${sans.variable} ${mono.variable}`}>
       <body className="flex min-h-screen flex-col bg-paper text-ink">
-        {/* En-tete non colle : la barre fixe avec flou est un reflexe de
-            gabarit, et elle ne sert ici a rien. */}
-        <header className="border-b border-rule">
-          <div className="mx-auto flex max-w-6xl flex-col gap-3 px-5 py-4 lg:flex-row lg:items-baseline lg:justify-between">
-            <Link
-              href="/"
-              className="font-mono text-[13px] font-medium tracking-[0.1em] text-ink"
-            >
-              WARULT
-            </Link>
-            <ToolIndex />
-          </div>
-        </header>
+        {/* Le fournisseur de session enveloppe l'en-tete ET le contenu : les
+            deux lisent l'etat de connexion, et le contenu des outils s'en sert
+            pour envoyer son jeton. */}
+        <AuthProvider>
+          <SiteHeader />
 
-        <main className="flex-1">{children}</main>
+          <main className="flex-1">{children}</main>
 
-        <footer className="mt-24 border-t border-rule">
-          <div className="mx-auto flex max-w-6xl flex-col gap-2 px-5 py-8 sm:flex-row sm:items-baseline sm:justify-between">
-            <p className="max-w-measure text-sm text-ink-soft">
-              Les fichiers sont traités le temps de l’opération, puis oubliés.
-              Aucun compte, aucun stockage, aucune revente.
-            </p>
-            <p className="font-mono text-xs text-ink-faint">© 2026 warult-tools.com</p>
-          </div>
-        </footer>
+          <footer className="mt-24 border-t border-rule">
+            <div className="mx-auto flex max-w-6xl flex-col gap-2 px-5 py-8 sm:flex-row sm:items-baseline sm:justify-between">
+              <p className="max-w-measure text-sm text-ink-soft">
+                Les fichiers sont traités le temps de l’opération, puis oubliés.
+                Aucun stockage, aucune revente.
+              </p>
+              <p className="font-mono text-xs text-ink-faint">© 2026 warult-tools.com</p>
+            </div>
+          </footer>
+        </AuthProvider>
       </body>
     </html>
   );

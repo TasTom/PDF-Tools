@@ -29,10 +29,11 @@ export default function Home() {
           PDF Tools
         </h1>
         <p className="mt-4 max-w-measure text-lg text-ink-soft">
-          Dix opérations sur un document, gratuitement et sans compte.
+          Dix opérations sur un document. Gratuit, dans la limite d’un quota
+          quotidien.
         </p>
         <p className="mt-2 max-w-measure text-ink-faint">
-          Vos fichiers ne sont pas conservés.
+          Un compte est nécessaire, et vos fichiers ne sont pas conservés.
         </p>
       </div>
 

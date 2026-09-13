@@ -6,3 +6,8 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Base SQLite de developpement : des comptes et des quotas de test n'ont rien a
+# faire dans le depot.
+backend/data/
+*.tsbuildinfo

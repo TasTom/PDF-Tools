@@ -8,6 +8,7 @@
 | **B** — Space dédié | ✅ **en service** | `warult47/pdf-tools-api.hf.space` |
 | **Frontend** | ✅ **redéployé** sur Vercel | `pdf.warult-tools.com` |
 | **C** — passer `tuilter` en privé | ⛔ **IMPOSSIBLE** | voir plus bas |
+| **D** — comptes + quota | ⚠️ **code prêt, non déployé** | voir « Blocage base de données » |
 
 ---
 
@@ -154,6 +155,80 @@ python hf_deploy/verify_deployment.py https://pdf.warult-tools.com
 des pages, compression effective à chaque niveau, refus d'un PDF corrompu,
 filigrane réellement posé, sens de rotation.
 
+⚠️ Depuis l'ajout des comptes, ces vérifications exigent un **jeton** : sans lui
+l'API répond `401`, ce qui n'est pas un échec du déploiement.
+
+---
+
+## D — Comptes et quota : code prêt, déploiement bloqué
+
+### Ce qui est prêt
+
+Auth JWT + quota quotidien global, tables `pdf_users` / `pdf_daily_usage`
+(préfixe `pdf_` : la base peut être partagée avec l'autre produit).
+42 tests backend passent, le parcours complet a été validé dans le navigateur
+(inscription depuis un outil, retour à l'outil, opération décomptée, quota
+atteint, déconnexion, reconnexion).
+
+### Secrets configurés
+
+```bash
+python hf_deploy/configure_secrets.py --dry-run   # montrer
+python hf_deploy/configure_secrets.py             # appliquer
+```
+
+| Secret | Valeur | Pourquoi |
+|---|---|---|
+| `SECRET_KEY` | 64 caractères, **propre à ce Space** | Il avait hérité de celle du gabarit de l'autre produit : un jeton émis par `warult-tools.com` était déchiffrable ici |
+| `DAILY_LIMIT` | `20` | Le Space contient encore `FREE_DAILY_LIMIT` et `PRO_DAILY_LIMIT`, qui ne sont **pas** lus par ce code |
+| `CORS_ORIGINS` | `https://pdf.warult-tools.com,http://localhost:3000` | Explicite, plutôt qu'héritée |
+
+Le script refuse de réutiliser la clé locale tant qu'elle ne porte pas le marqueur
+`SECRET_KEY_DEDIEE=pdf-tools` — sans quoi il aurait « remplacé » la clé partagée par
+elle-même.
+
+### Blocage base de données
+
+Le Space a hérité d'un `DATABASE_URL` du gabarit de l'autre produit. **Trois pannes
+successives**, chacune masquant la suivante ; les deux premières se corrigent en code,
+la troisième non :
+
+| # | Erreur au démarrage | Cause | Traitement |
+|---|---|---|---|
+| 1 | `ModuleNotFoundError: No module named 'psycopg2'` | URL en forme **synchrone** (`postgresql://`) : SQLAlchemy en déduit psycopg2, refusé par un moteur async | `url_asynchrone()` dans `app/database.py` |
+| 2 | `TypeError: connect() got an unexpected keyword argument 'sslmode'` | L'URL Neon contient `?sslmode=require&channel_binding=require`, qu'asyncpg transmet à `connect()` | `_nettoyer()` : `sslmode` traduit en `ssl`, options libpq retirées |
+| 3 | `InvalidPasswordError: password authentication failed for user 'neondb_owner'` | **Mot de passe périmé** dans le secret | ⛔ Nécessite un `DATABASE_URL` valide |
+
+Indice utile : `https://tuilter-bg-remover-api.hf.space/health` répond
+`{"status":"ok","db":"connected"}` — Neon fonctionne, seul le secret de **ce** Space
+est périmé.
+
+### Retour arrière effectué
+
+Le 2026-09-13, le déploiement du code avec comptes a laissé le site en `503`
+(le service ne démarrait pas). `pdf.warult-tools.com` a été rétabli en revenant à la
+révision `752673dd2a`, la dernière sans comptes :
+
+```bash
+python hf_deploy/rollback_space.py --space warult47/pdf-tools-api --liste 8
+python hf_deploy/rollback_space.py --space warult47/pdf-tools-api --revision 752673dd2a
+```
+
+Vérifié après retour arrière : `POST /api/pdf/rotate` → `200`, 932 octets, en direct et
+via `pdf.warult-tools.com`.
+
+### Lire les journaux d'un Space — indispensable
+
+`space_info` ne dit que `RUNNING` ou `in error`, et l'interface web affiche
+« SSE is not enabled ». Les trois pannes ci-dessus n'ont été identifiées que par :
+
+```bash
+python hf_deploy/journaux_space.py warult47/pdf-tools-api
+```
+
+Le jeton doit appartenir au **propriétaire** du Space : sinon `401 Invalid username or
+password`. Ne pas définir `HF_TOKEN` s'il désigne l'autre compte.
+
 ---
 
 ## Le frontend
@@ -192,6 +267,8 @@ vercel rollback --project pdf-tools
 | Space dédié | `RUNNING`, 12 routes, aucun résidu |
 | Ratios de compression Windows / Linux | identiques (−88 / −56 / −42 %) |
 | Compilation du frontend | 14 pages, types validés |
+| Retour arrière du Space | `503` → `200` sur une opération PDF réelle |
+| Tests backend | **44**, tous verts |
 
 ### Ce qui n'a pas été vérifié
 

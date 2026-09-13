@@ -3,6 +3,17 @@ fastapi==0.115.*
 uvicorn[standard]==0.34.*
 python-multipart==0.0.20
 
+# Authentification (comptes et jetons JWT)
+python-jose[cryptography]==3.4.*
+passlib[bcrypt]==1.7.*
+bcrypt==4.3.*
+pydantic[email]>=2.10
+
+# Base de donnees : quota quotidien persistant
+sqlalchemy[asyncio]==2.0.*
+aiosqlite==0.21.*
+asyncpg>=0.30
+
 # PDF processing
 pypdf>=5.0
 pikepdf>=9.0

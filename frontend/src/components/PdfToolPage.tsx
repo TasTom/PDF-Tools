@@ -1,8 +1,11 @@
 'use client';
 
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useState } from 'react';
 
 import Diagram from '@/components/Diagram';
+import { entetesAuth, useAuth } from '@/lib/auth';
 import { getTool } from '@/lib/tools';
 
 /** Taille lisible : on reste en Ko tant que le fichier est petit. */
@@ -47,6 +50,9 @@ type Phase = 'idle' | 'busy' | 'done';
 
 export default function PdfToolPage({ slug }: { slug: string }) {
   const tool = getTool(slug);
+  const { user, token, loading, refresh } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
 
   const [files, setFiles] = useState<File[]>([]);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -89,9 +95,25 @@ export default function PdfToolPage({ slug }: { slug: string }) {
     });
 
     try {
-      const response = await fetch(tool.endpoint, { method: 'POST', body });
+      const response = await fetch(tool.endpoint, {
+        method: 'POST',
+        body,
+        headers: entetesAuth(token),
+      });
+
+      // Session expiree ou absente : on emmene vers la connexion, en gardant
+      // l'outil demande pour y revenir ensuite.
+      if (response.status === 401) {
+        router.push(`/auth/login?suivant=${encodeURIComponent(pathname)}`);
+        return;
+      }
+
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
+        // Un refus (quota atteint, trop de requetes) deplace l'etat affiche :
+        // sans cette relecture, le bouton reste actif et l'utilisateur relance
+        // une operation qui sera refusee de la meme facon.
+        if (response.status === 429) void refresh();
         throw new Error(readError(response.status, payload));
       }
 
@@ -107,6 +129,9 @@ export default function PdfToolPage({ slug }: { slug: string }) {
         archive,
       });
       setPhase('done');
+
+      // Le compteur affiche doit suivre ce qui vient d'etre consomme.
+      void refresh();
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -118,6 +143,60 @@ export default function PdfToolPage({ slug }: { slug: string }) {
   };
 
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+
+  // Tant que la session n'est pas verifiee, on n'affiche ni formulaire ni
+  // invitation : sinon « Connexion requise » clignote chez un utilisateur
+  // pourtant deja connecte.
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-6xl px-5 py-16">
+        <p className="text-ink-faint">Chargement…</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="mx-auto max-w-2xl px-5 py-16">
+        <div className="flex items-start gap-5">
+          <Diagram slug={slug} className="mt-2 hidden sm:block" />
+          <div className="min-w-0">
+            <h1 className="text-[28px] font-semibold leading-[1.2] tracking-[-0.01em] sm:text-[34px]">
+              {tool.title}
+            </h1>
+            <p className="mt-2 max-w-measure text-ink-soft">{tool.blurb}</p>
+          </div>
+        </div>
+
+        <div className="mt-10 rounded-sm border border-rule bg-white p-6">
+          <h2 className="font-medium text-ink">Un compte est nécessaire</h2>
+          <p className="mt-1 max-w-measure text-sm text-ink-soft">
+            Chaque opération est comptée dans un quota quotidien, ce qui suppose de
+            savoir à qui elle est décomptée. L’inscription prend quelques secondes et
+            ne demande qu’une adresse email.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Link
+              href={`/auth/register?suivant=${encodeURIComponent(pathname)}`}
+              className="rounded-sm bg-ink px-5 py-2.5 font-medium text-paper hover:bg-accent"
+            >
+              Créer un compte
+            </Link>
+            <Link
+              href={`/auth/login?suivant=${encodeURIComponent(pathname)}`}
+              className="rounded-sm border border-rule px-5 py-2.5 font-medium text-ink hover:border-ink"
+            >
+              Se connecter
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Au-dela de la limite, le service refuse : laisser le bouton actif ne
+  // produirait qu'un aller-retour reseau et un message d'erreur evitable.
+  const quotaEpuise = user.daily_usage >= user.daily_limit;
 
   return (
     <div className="mx-auto max-w-6xl px-5">
@@ -236,11 +315,20 @@ export default function PdfToolPage({ slug }: { slug: string }) {
           <button
             type="button"
             onClick={run}
-            disabled={files.length === 0 || phase === 'busy'}
+            disabled={files.length === 0 || phase === 'busy' || quotaEpuise}
             className="w-full rounded-sm bg-ink px-5 py-3 font-medium text-paper disabled:cursor-not-allowed disabled:bg-rule disabled:text-ink-faint"
           >
-            {phase === 'busy' ? 'Traitement en cours…' : tool.action}
+            {phase === 'busy' ? 'Traitement en cours…' : quotaEpuise ? 'Quota atteint' : tool.action}
           </button>
+
+          {/* Le quota est affiche AVANT l'action, pas seulement quand il est
+              epuise : decouvrir la limite en se faisant refuser serait brutal. */}
+          <p className="font-mono text-xs text-ink-faint">
+            {user.daily_usage} / {user.daily_limit} opérations aujourd’hui
+            {quotaEpuise && (
+              <span className="text-accent"> — quota atteint, réinitialisé à minuit</span>
+            )}
+          </p>
 
           {error && (
             <p
