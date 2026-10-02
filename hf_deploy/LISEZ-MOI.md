@@ -9,6 +9,7 @@
 | **Frontend** | ✅ **redéployé** sur Vercel | `pdf.warult-tools.com` |
 | **C** — passer `tuilter` en privé | ⛔ **IMPOSSIBLE** | voir plus bas |
 | **D** — comptes + quota | ✅ **en service** | base Neon `pdf-tools`, Francfort |
+| **E** — connexion Google | ✅ **en service** | même client OAuth que l'autre produit |
 
 ---
 
@@ -170,7 +171,7 @@ s'arrête au lieu de produire un bilan trompeur.
 ### Ce qui est déployé
 
 Auth JWT + quota quotidien global, tables `pdf_users` / `pdf_daily_usage` dans une
-base Neon dédiée. 44 tests backend passent. Le parcours complet a été validé dans
+base Neon dédiée. 53 tests backend passent. Le parcours complet a été validé dans
 le navigateur **sur le site public** : inscription depuis un outil, retour à
 l'outil, opération décomptée (`0/20` → `1/20`), fichier renvoyé sous le nom
 `petit-compresse.pdf`.
@@ -202,6 +203,7 @@ python hf_deploy/configure_secrets.py             # appliquer
 |---|---|---|
 | `SECRET_KEY` | 64 caractères, **propre à ce Space** | Il avait hérité de celle du gabarit de l'autre produit : un jeton émis par `warult-tools.com` était déchiffrable ici |
 | `DATABASE_URL` | lue dans le `.env` local | Le secret hérité était refusé par la base |
+| `GOOGLE_CLIENT_ID` | lue dans le `.env` local | Doit être **identique** à `NEXT_PUBLIC_GOOGLE_CLIENT_ID` du site |
 | `DAILY_LIMIT` | `20` | Le Space contient encore `FREE_DAILY_LIMIT` et `PRO_DAILY_LIMIT`, qui ne sont **pas** lus par ce code |
 | `CORS_ORIGINS` | `https://pdf.warult-tools.com,http://localhost:3000` | Explicite, plutôt qu'héritée |
 
@@ -259,6 +261,59 @@ password`. Ne pas définir `HF_TOKEN` s'il désigne l'autre compte.
 
 ---
 
+## E — Connexion Google : EN SERVICE
+
+### Configuration
+
+Le client OAuth est **celui de l'autre produit** (`841725942051-…`), réutilisé tel
+quel : Google autorise plusieurs adresses de retour sur un même client, et
+`https://pdf.warult-tools.com/auth/google/callback` y était déjà déclarée. Aucune
+création n'a donc été nécessaire.
+
+| Où | Variable | Valeur |
+|---|---|---|
+| Space (secret) | `GOOGLE_CLIENT_ID` | `841725942051-…apps.googleusercontent.com` |
+| Vercel (Production) | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | **la même** |
+| `.env` local | `GOOGLE_CLIENT_ID` | la même |
+| `frontend/.env.local` | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | la même |
+
+Les deux premières sont poussées par `configure_secrets.py` et par `vercel env add`.
+
+⚠️ **Le nom affiché sur l'écran de consentement Google est « BG Remover »**, parce
+que le client appartient au projet Google Cloud de l'autre produit. Sans effet sur
+le fonctionnement, mais déroutant pour l'utilisateur. Corriger demande soit de
+renommer l'application dans la console Google Cloud (ce qui change aussi l'autre
+produit), soit de créer un client OAuth dédié à PDF Tools.
+
+### Vérifié en production
+
+| Contrôle | Résultat |
+|---|---|
+| Bouton présent sur `/auth/login` et `/auth/register` | oui |
+| Départ vers Google : `client_id`, `redirect_uri`, `nonce`, `scope` | corrects |
+| Écran de sélection de compte Google | affiché — donc le couple client/redirection est accepté |
+| Retour, création du compte, atterrissage | compte `tomtas`, `auth_provider=google`, **aucun mot de passe** |
+| Opération PDF avec ce compte | `200`, fichier `petit-compresse.pdf` |
+| Jeton fabriqué envoyé à `/api/auth/google` | `401 Jeton Google invalide` — le serveur interroge bien Google |
+
+### Pièges
+
+- **Google valide le port de redirection.** `localhost:3000` est accepté,
+  `localhost:3001` et `127.0.0.1:3000` sont refusés (`redirect_uri_mismatch`). Le test
+  local exige donc le port 3000 — or il est occupé sur cette machine par
+  `D:\Trade_APP\bot-supervisor.ps1`. La connexion Google n'a donc pas pu être testée
+  en local ici ; elle l'a été en production.
+- **Les pages `/auth/login` et `/auth/register` ne sont pas prérendues.** Elles
+  utilisent `useSearchParams()`, donc Next les rend entièrement côté client : le HTML
+  servi ne contient ni le formulaire ni le bouton. C'est le comportement existant, pas
+  un défaut introduit par la connexion Google — mais un contrôle qui cherche le bouton
+  dans le HTML brut conclura à tort qu'il manque.
+- **`httpx` a été ajouté à `requirements.txt`.** Il n'était que dans
+  `requirements-dev.txt` (tiré par le TestClient) : l'image de production ne
+  l'installait pas, et la route Google aurait échoué **en production seulement**.
+
+---
+
 ## Le frontend
 
 Le projet Vercel **`pdf-tools`** sert `pdf.warult-tools.com`. Il n'est **pas
@@ -296,8 +351,9 @@ vercel rollback --project pdf-tools
 | Ratios de compression Windows / Linux | identiques (−88 / −56 / −42 %) |
 | Compilation du frontend | 14 pages, types validés |
 | Retour arrière du Space | `503` → `200` sur une opération PDF réelle |
-| Tests backend | **44**, tous verts |
+| Tests backend | **53**, tous verts |
 | Comptes + quota en production | `401` sans compte, `201` à l'inscription, `0/20` → `1/20` |
+| Connexion Google en production | compte créé, opération PDF réussie |
 
 ### Ce qui n'a pas été vérifié
 

@@ -227,6 +227,25 @@ def main() -> int:
         "CORS_ORIGINS": f"{DOMAINE},http://localhost:3000",
     }
 
+    # --- Connexion Google ---
+    # Identifiant PUBLIC, mais il vit dans le .env par coherence : c'est deja le
+    # fichier qui porte les valeurs de l'environnement, et le code du serveur le
+    # lit sous le nom GOOGLE_CLIENT_ID.
+    #
+    # Il doit etre IDENTIQUE a la variable NEXT_PUBLIC_GOOGLE_CLIENT_ID du site :
+    # c'est ce qui permet au serveur de verifier que le jeton recu a bien ete
+    # emis pour ce site. Deux valeurs differentes = « Jeton Google non autorise
+    # pour ce site », a chaque connexion.
+    client_google = entrees.get("GOOGLE_CLIENT_ID", "").strip()
+    if client_google:
+        variables["GOOGLE_CLIENT_ID"] = client_google
+        print("\n=== connexion Google ===")
+        print(f"  GOOGLE_CLIENT_ID lue depuis {ENV.name} : {client_google}")
+    else:
+        print("\n=== connexion Google ===")
+        print(f"  GOOGLE_CLIENT_ID absente de {ENV.name} : la connexion Google "
+              "restera desactivee (le bouton ne s'affiche pas).")
+
     # --- Base de donnees ---
     url_base = entrees.get("DATABASE_URL", "").strip()
     if not url_base:

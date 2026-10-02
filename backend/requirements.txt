@@ -9,6 +9,15 @@ passlib[bcrypt]==1.7.*
 bcrypt==4.3.*
 pydantic[email]>=2.10
 
+# Client HTTP : verification du jeton Google aupres de Google.
+#
+# Il figurait uniquement dans requirements-dev.txt (il est tire par le
+# TestClient de Starlette). L'image de production ne l'installait donc pas, et
+# l'endpoint Google aurait echoue en production seulement — le genre d'ecart
+# entre le poste de developpement et le conteneur qui ne se voit qu'une fois
+# deploye.
+httpx>=0.27
+
 # Base de donnees : quota quotidien persistant
 sqlalchemy[asyncio]==2.0.*
 aiosqlite==0.21.*

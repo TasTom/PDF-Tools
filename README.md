@@ -140,15 +140,20 @@ source de tout service en ligne qui l'utilise.
 
 ## Tests
 
-**44 tests** d'intégration couvrent les dix outils, les comptes, le quota et leurs cas
-limites. Ils tournent **en mémoire** (TestClient de Starlette) : aucun serveur à lancer,
-la suite complète prend moins de dix secondes.
+**53 tests** d'intégration couvrent les dix outils, les comptes, la connexion Google, le
+quota et leurs cas limites. Ils tournent **en mémoire** (TestClient de Starlette) : aucun
+serveur à lancer, la suite complète prend moins de quinze secondes.
 
 ```bash
 cd backend
 pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest
 ```
+
+L'appel à Google est remplacé dans les tests (`_infos_jeton_google`) : un test qui
+interrogerait vraiment Google ne serait ni déterministe, ni exécutable hors ligne, et ne
+pourrait pas fabriquer les cas qui comptent — jeton émis pour un autre site, adresse non
+vérifiée, compte désactivé.
 
 Ce qu'ils figent, et qui autrement ne se revérifierait jamais :
 
@@ -173,6 +178,11 @@ Ce qu'ils figent, et qui autrement ne se revérifierait jamais :
 | Un mot de passe faible ou un email déjà pris est refusé | 8 caractères, une majuscule, un chiffre |
 | Un email inconnu et un mauvais mot de passe donnent le **même** message | Sinon on peut énumérer les comptes |
 | Un jeton signé avec la même clé mais émis par un **autre service** est refusé | Le cas réel : `SECRET_KEY` partagée avec l'autre produit |
+| Un jeton Google émis pour **un autre site** est refusé | Sans le contrôle de `aud`, n'importe quelle application du même compte Google ouvrirait un compte ici |
+| Une adresse Google **non vérifiée** est refusée | Sinon il suffirait d'annoncer l'adresse d'autrui pour prendre son compte |
+| Un compte existant repris par Google **perd son mot de passe** | Sinon l'ancien détenteur de l'adresse garderait un accès parallèle |
+| Un nom d'utilisateur déjà pris reçoit un suffixe | Google fournit un nom d'affichage, pas un identifiant |
+| Un compte désactivé est refusé **quelle que soit la porte d'entrée** | Google ne doit pas contourner la désactivation |
 | Un fichier refusé ne consomme pas d'opération | Valider avant de compter |
 | Le quota est **global**, pas par outil | Sinon il suffirait de changer d'outil |
 | Une URL de base en forme synchrone reçoit son pilote async | Panne de démarrage réelle en production |
@@ -199,18 +209,61 @@ Trois mécanismes indépendants : un **compte**, un **quota quotidien par compte
 ### 1. Un compte est nécessaire
 
 Chaque opération est décomptée à quelqu'un, donc il faut savoir à qui. Les dix outils
-exigent un jeton Bearer obtenu par `/api/auth/register` ou `/api/auth/login` ; sans lui,
-l'API répond `401` et le frontend propose de créer un compte en conservant l'outil demandé.
+exigent un jeton Bearer obtenu par `/api/auth/register`, `/api/auth/login` ou
+`/api/auth/google` ; sans lui, l'API répond `401` et le frontend propose de créer un compte
+en conservant l'outil demandé.
 
 | Route | Limite | Remarque |
 |---|---|---|
 | `POST /api/auth/register` | `5/minute` | Mot de passe : 8 caractères minimum, une majuscule, un chiffre |
 | `POST /api/auth/login` | `10/minute` | **Même message** pour un email inconnu et un mauvais mot de passe, sinon on peut énumérer les comptes |
+| `POST /api/auth/google` | `10/minute` | Jeton d'identité Google, vérifié auprès de Google |
 | `GET /api/auth/me` | — | Relit le profil et le quota du jour |
 
 Le mot de passe est haché par `bcrypt` (`passlib`). Le jeton est un JWT HS256, valable
 24 h, qui ne porte que l'identifiant : **l'utilisateur est relu en base à chaque appel**,
 donc désactiver un compte prend effet immédiatement.
+
+### Connexion Google
+
+Le bouton « Continuer avec Google » mène à Google par une **redirection complète**, et non
+par le widget *Google Identity Services*. Ce dernier s'appuie sur FedCM, que les navigateurs
+et les bloqueurs de contenu désactivent ou retardent de plus en plus souvent ; la
+redirection, elle, ne dépend d'aucun script tiers chargé dans la page.
+
+Le jeton revient dans le **fragment** d'URL (`#id_token=…`), jamais dans la requête : un
+fragment n'est pas transmis au serveur, donc le jeton ne traîne pas dans les journaux.
+
+Trois contrôles sont faits **côté serveur**, chacun fermant une porte précise :
+
+| Contrôle | Ce qu'il empêche |
+|---|---|
+| Signature et validité, établies par Google (`tokeninfo`) | Un jeton fabriqué de toutes pièces |
+| `aud` = notre identifiant client | Un jeton obtenu par **une autre application** utilisant le même compte Google |
+| `email_verified` | Réclamer le compte d'autrui en annonçant son adresse |
+
+Le navigateur, lui, ne vérifie qu'une chose : le `nonce` qu'il a déposé avant de partir. Il
+ne peut pas établir qu'un jeton a été signé par Google — c'est le rôle du serveur. Ce
+contrôle local sert uniquement à écarter un jeton qui ne répond pas à *cette* tentative.
+
+**Un compte existant est repris, et son mot de passe retiré.** Si quelqu'un s'était inscrit
+avec une adresse email, puis se connecte avec Google sur cette même adresse, Google certifie
+que l'adresse lui appartient : le compte lui revient. Le mot de passe est effacé au passage,
+sinon l'ancien détenteur de l'adresse conserverait un accès parallèle. Conséquence assumée :
+après une première connexion Google, le mot de passe ne fonctionne plus — le site n'a pas de
+« mot de passe oublié », l'accès passe désormais par Google.
+
+`GOOGLE_CLIENT_ID` (serveur) et `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (site) doivent porter **la
+même valeur** : c'est ce qui permet au serveur de reconnaître un jeton émis pour ce site.
+Deux valeurs différentes donnent « Jeton Google non autorisé pour ce site » à chaque
+connexion. Sans `GOOGLE_CLIENT_ID`, le bouton ne s'affiche pas et la route répond `503` avec
+un message explicite, plutôt qu'un échec incompréhensible au clic.
+
+⚠️ **Google valide le port de redirection.** `http://localhost:3000` est autorisé,
+`http://localhost:3001` et `http://127.0.0.1:3000` sont refusés (`redirect_uri_mismatch`).
+Le test local de la connexion Google exige donc le port 3000 exactement — et l'adresse
+`localhost`, jamais `127.0.0.1`. Le code réécrit d'ailleurs `127.0.0.1` en `localhost` pour
+cette raison.
 
 ### 2. Quota quotidien, global
 
@@ -273,6 +326,7 @@ ce jeton-là. Une clé dédiée a depuis été définie, et les deux protections
 |---|---|---|
 | `SECRET_KEY` | — | **Obligatoire**, 32 caractères minimum. Le service refuse de démarrer sinon |
 | `DATABASE_URL` | SQLite local | Base des comptes et des quotas. PostgreSQL en production |
+| `GOOGLE_CLIENT_ID` | — | Identifiant public du client OAuth. Vide = connexion Google désactivée |
 | `DAILY_LIMIT` | `20` | Opérations par compte et par jour, tous outils confondus |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | Durée de vie du jeton |
 | `MAX_UPLOAD_MB` | `50` | Taille maximale d'un fichier envoyé |
@@ -341,7 +395,7 @@ Le fichier `.env` est lu à la racine du dépôt.
 # Backend — http://localhost:8000
 cd backend
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest                                  # 44 tests, ~10 s
+python -m pytest                                  # 53 tests, ~15 s
 uvicorn app.main:app --reload --port 8000
 
 # Frontend — http://localhost:3000

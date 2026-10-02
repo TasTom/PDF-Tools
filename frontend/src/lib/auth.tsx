@@ -35,6 +35,15 @@ type AuthState = {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, username: string, password: string) => Promise<void>;
+  /**
+   * Connexion via Google.
+   *
+   * Reçoit le jeton d'identité que Google renvoie dans l'URL après redirection.
+   * Il n'est PAS vérifié ici : le navigateur ne peut pas établir qu'un jeton a
+   * été signé par Google. C'est le serveur qui le vérifie auprès de Google, puis
+   * renvoie une session comme pour les autres méthodes.
+   */
+  googleLogin: (credential: string) => Promise<void>;
   logout: () => void;
   /** Relit le profil : sert à rafraîchir le quota après une opération. */
   refresh: () => Promise<void>;
@@ -139,6 +148,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [enregistrer],
   );
 
+  const googleLogin = useCallback(
+    async (credential: string) => {
+      const reponse = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential }),
+      });
+      if (!reponse.ok) throw new Error(await lireErreur(reponse));
+      const corps = await reponse.json();
+      enregistrer(corps.access_token, corps.user);
+    },
+    [enregistrer],
+  );
+
   const logout = useCallback(() => {
     session.current += 1;
     window.localStorage.removeItem(CLE_JETON);
@@ -161,7 +184,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [logout]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, refresh }}>
+    <AuthContext.Provider
+      value={{ user, token, loading, login, register, googleLogin, logout, refresh }}
+    >
       {children}
     </AuthContext.Provider>
   );

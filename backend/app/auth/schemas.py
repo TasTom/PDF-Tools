@@ -38,6 +38,24 @@ class UserLogin(BaseModel):
     password: str
 
 
+class GoogleLoginRequest(BaseModel):
+    """Jeton d'identite Google, obtenu par le flux de redirection cote site.
+
+    `credential` porte le nom donne par Google dans son flux OAuth ; le champ
+    est un JWT signe par Google, verifie cote serveur avant toute creation de
+    compte.
+    """
+
+    credential: str
+
+    @field_validator("credential")
+    @classmethod
+    def credential_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Jeton Google manquant")
+        return v
+
+
 class UserResponse(BaseModel):
     id: int
     email: str

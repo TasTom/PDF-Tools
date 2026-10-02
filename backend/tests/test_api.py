@@ -18,10 +18,12 @@ Lancer depuis `backend/` :
 """
 import io
 import os
+import sqlite3
 import zipfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import conftest as conftest_module
 from jose import jwt
 from PIL import Image
 from pypdf import PdfReader
@@ -721,6 +723,185 @@ def test_a_token_from_another_service_is_refused(raw_client):
     for etranger in (sans_audience, audience_etrangere):
         reponse = raw_client.get("/api/auth/me", headers={"Authorization": f"Bearer {etranger}"})
         assert reponse.status_code == 401, "jeton d'un autre service accepte"
+
+
+# --------------------------------------------------------------------------
+# Connexion Google
+# --------------------------------------------------------------------------
+#
+# L'appel reseau vers Google est remplace (`_infos_jeton_google`). Un test qui
+# appellerait vraiment Google ne serait ni deterministe, ni executable hors
+# ligne, et ne pourrait pas fabriquer les cas qui comptent : jeton emis pour un
+# autre site, adresse non verifiee, compte desactive.
+
+def faux_jeton_google(monkeypatch, **remplacements):
+    """Fait repondre Google avec des informations choisies par le test."""
+    from app.auth import router as auth_router
+
+    infos = {
+        "aud": settings.GOOGLE_CLIENT_ID,
+        "email": "utilisateur@gmail.com",
+        "email_verified": "true",
+        "name": "Marie Dupont",
+    }
+    infos.update(remplacements)
+
+    async def faux(_credential):
+        return infos
+
+    monkeypatch.setattr(auth_router, "_infos_jeton_google", faux)
+    return infos
+
+
+def connexion_google(client, credential="jeton-factice"):
+    return client.post("/api/auth/google", json={"credential": credential})
+
+
+def test_google_creates_an_account_on_the_first_sign_in(raw_client, monkeypatch):
+    identifiant = os.urandom(4).hex()
+    email = f"google-{identifiant}@example.com"
+    # Le nom porte un espace et des majuscules : il doit ressortir sous une forme
+    # acceptable par nos propres regles de nom d'utilisateur. Le suffixe tire au
+    # sort evite de dependre de ce qu'un test precedent a laisse en base.
+    faux_jeton_google(monkeypatch, email=email, name=f"Marie Dupont {identifiant}")
+
+    reponse = connexion_google(raw_client)
+    assert reponse.status_code == 200, reponse.text
+
+    corps = reponse.json()
+    assert corps["user"]["email"] == email
+    assert corps["user"]["username"] == f"mariedupont{identifiant}"
+    assert corps["user"]["auth_provider"] == "google"
+    assert corps["user"]["daily_usage"] == 0
+
+    # Le jeton doit ouvrir les outils comme n'importe quel autre.
+    entetes = {"Authorization": f"Bearer {corps['access_token']}"}
+    assert raw_client.get("/api/auth/me", headers=entetes).status_code == 200
+    operation = raw_client.post(
+        "/api/pdf/rotate", headers=entetes,
+        files={"file": as_pdf(make_pdf(1))}, data={"angle": "90"},
+    )
+    assert operation.status_code == 200
+
+
+def test_google_sign_in_twice_reuses_the_same_account(raw_client, monkeypatch):
+    email = f"google-{os.urandom(4).hex()}@example.com"
+    faux_jeton_google(monkeypatch, email=email)
+
+    premier = connexion_google(raw_client).json()["user"]["id"]
+    second = connexion_google(raw_client).json()["user"]["id"]
+    assert premier == second, "un second passage a cree un doublon de compte"
+
+
+def test_google_takes_over_an_existing_password_account(raw_client, monkeypatch):
+    """Un compte cree par mot de passe, rouvert par Google.
+
+    Google certifie que l'adresse appartient a la personne qui se connecte : le
+    compte lui revient. Le mot de passe est retire, sinon une personne ayant
+    enregistre cette adresse avant son proprietaire garderait un acces parallele.
+    """
+    identifiant = os.urandom(4).hex()
+    email = f"reprise-{identifiant}@example.com"
+
+    inscription = raw_client.post("/api/auth/register", json={
+        "email": email, "username": f"reprise{identifiant}", "password": "MotDePasse1",
+    })
+    assert inscription.status_code == 201
+    compte_id = inscription.json()["user"]["id"]
+
+    # Le mot de passe fonctionne avant.
+    assert raw_client.post("/api/auth/login", json={
+        "email": email, "password": "MotDePasse1"}).status_code == 200
+
+    faux_jeton_google(monkeypatch, email=email, name="Autre Nom")
+    reprise = connexion_google(raw_client)
+    assert reprise.status_code == 200
+    # Meme compte : on n'en cree pas un second.
+    assert reprise.json()["user"]["id"] == compte_id
+    assert reprise.json()["user"]["auth_provider"] == "google"
+    # Le nom d'utilisateur d'origine est conserve.
+    assert reprise.json()["user"]["username"] == f"reprise{identifiant}"
+
+    # Et le mot de passe ne fonctionne plus.
+    apres = raw_client.post("/api/auth/login", json={"email": email, "password": "MotDePasse1"})
+    assert apres.status_code == 401, "l'ancien mot de passe reste valable"
+
+
+def test_google_token_issued_for_another_site_is_refused(raw_client, monkeypatch):
+    """Sans controle de `aud`, un jeton d'une autre application ouvrirait un compte ici."""
+    faux_jeton_google(monkeypatch, aud="un-autre-client.apps.googleusercontent.com")
+    reponse = connexion_google(raw_client)
+    assert reponse.status_code == 401
+    assert "autorisé" in reponse.json()["detail"]
+
+
+def test_google_requires_a_verified_email(raw_client, monkeypatch):
+    """Une adresse non verifiee ne doit pas permettre de reclamer un compte.
+
+    Google peut renvoyer `email_verified` a "false" : sans ce controle, il
+    suffirait d'annoncer l'adresse d'autrui pour prendre son compte.
+    """
+    faux_jeton_google(monkeypatch, email_verified="false")
+    reponse = connexion_google(raw_client)
+    assert reponse.status_code == 401
+    assert "vérifiée" in reponse.json()["detail"]
+
+    # La valeur arrive en chaine sur cet endpoint : on verifie aussi la forme
+    # booleenne, pour ne pas dependre du format d'un jour.
+    faux_jeton_google(monkeypatch, email_verified=False)
+    assert connexion_google(raw_client).status_code == 401
+
+
+def test_google_adds_a_suffix_when_the_username_is_taken(raw_client, monkeypatch):
+    identifiant = os.urandom(4).hex()
+    # Un nom de base unique a ce test : le suffixe attendu ne depend donc pas de
+    # ce que les tests precedents ont laisse en base.
+    base = f"marie{identifiant}"
+
+    occupe = raw_client.post("/api/auth/register", json={
+        "email": f"occupe-{identifiant}@example.com",
+        "username": base,
+        "password": "MotDePasse1",
+    })
+    assert occupe.status_code == 201, "le nom a occuper doit etre libre au depart"
+
+    faux_jeton_google(monkeypatch, email=f"google-{identifiant}@example.com", name=base)
+    reponse = connexion_google(raw_client)
+    assert reponse.status_code == 200
+    assert reponse.json()["user"]["username"] == f"{base}2"
+
+
+def test_google_refuses_a_disabled_account(raw_client, monkeypatch):
+    """Desactiver un compte doit tenir, quelle que soit la porte d'entree."""
+    identifiant = os.urandom(4).hex()
+    email = f"desactive-{identifiant}@example.com"
+    raw_client.post("/api/auth/register", json={
+        "email": email, "username": f"desactive{identifiant}", "password": "MotDePasse1",
+    })
+
+    with sqlite3.connect(conftest_module._BASE_TEST) as connexion:
+        connexion.execute("UPDATE pdf_users SET is_active = 0 WHERE email = ?", (email,))
+        connexion.commit()
+
+    faux_jeton_google(monkeypatch, email=email)
+    reponse = connexion_google(raw_client)
+    assert reponse.status_code == 403
+
+
+def test_google_login_is_refused_when_not_configured(raw_client, monkeypatch):
+    """Configuration absente : 503 explicite, plutot qu'un echec incomprehensible."""
+    faux_jeton_google(monkeypatch)
+    monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "")
+
+    reponse = connexion_google(raw_client)
+    assert reponse.status_code == 503
+    assert "configurée" in reponse.json()["detail"]
+
+
+def test_google_requires_a_credential(raw_client):
+    """Un corps vide ne doit pas atteindre la verification."""
+    assert raw_client.post("/api/auth/google", json={}).status_code == 422
+    assert raw_client.post("/api/auth/google", json={"credential": "  "}).status_code == 422
 
 
 # --------------------------------------------------------------------------

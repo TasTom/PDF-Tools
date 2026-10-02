@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.schemas import Token, UserCreate, UserLogin, UserResponse
+from app.auth.schemas import Token, UserCreate, UserLogin, UserResponse, GoogleLoginRequest
 from app.auth.utils import (
     create_access_token,
     get_current_user,
@@ -108,3 +108,148 @@ async def me(user: User = Depends(get_current_user), db: AsyncSession = Depends(
     """Profil du compte connecté, avec sa consommation du jour."""
     usage = await _get_daily_usage(db, user.id)
     return _user_response(user, usage)
+
+
+async def _infos_jeton_google(credential: str) -> dict:
+    """Fait vérifier un jeton d'identité Google et renvoie ses informations.
+
+    Isolé dans sa propre fonction pour deux raisons : l'endpoint reste lisible,
+    et les tests peuvent remplacer cet appel sans dépendre du réseau ni de
+    Google. Un test qui appellerait vraiment Google ne serait ni déterministe ni
+    exécutable hors ligne.
+
+    Lève une `HTTPException` : 503 si Google est injoignable (ce n'est pas la
+    faute de l'utilisateur), 401 si le jeton est refusé.
+    """
+    try:
+        import httpx
+    except ImportError:
+        # Import tardif volontaire : httpx ne sert qu'ici. En import global, son
+        # absence ferait échouer le démarrage de TOUTE l'API, y compris les
+        # outils PDF qui n'en ont aucun besoin.
+        raise HTTPException(
+            status_code=503,
+            detail="La connexion Google est momentanément indisponible",
+        )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            reponse = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": credential},
+                timeout=10.0,
+            )
+    except httpx.HTTPError:
+        # Google injoignable : ce n'est pas un jeton invalide, et le dire évite
+        # à l'utilisateur de croire que son compte a un problème.
+        raise HTTPException(
+            status_code=503,
+            detail="Google est injoignable pour le moment. Réessayez dans un instant.",
+        )
+
+    if reponse.status_code != 200:
+        raise HTTPException(status_code=401, detail="Jeton Google invalide")
+
+    return reponse.json()
+
+
+@router.post("/google", response_model=Token, summary="Se connecter avec Google")
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+async def google_login(request: Request, payload: GoogleLoginRequest,
+                       db: AsyncSession = Depends(get_db)):
+    """Se connecter (ou créer un compte) avec Google.
+
+    Le site envoie le jeton d'identité Google obtenu par redirection. Ce jeton
+    est vérifié **auprès de Google** avant toute création de compte : le client
+    ne décide donc pas de l'adresse email qu'il prétend avoir.
+
+    Trois contrôles, chacun fermant une porte précise :
+
+    - la signature et la validité, établies par Google via `tokeninfo` ;
+    - `aud` : le jeton a bien été émis pour CE site. Sans ce contrôle, un jeton
+      obtenu par n'importe quelle autre application utilisant le même compte
+      Google serait accepté ici ;
+    - `email_verified` : Google certifie que l'adresse lui appartient. C'est ce
+      qui autorise à rattacher le jeton à un compte existant portant le même
+      email. Sans ce contrôle, une adresse non vérifiée permettrait de réclamer
+      le compte d'autrui.
+    """
+    if not settings.GOOGLE_CLIENT_ID:
+        # Configuration absente : on le dit franchement plutôt que de laisser
+        # croire à un problème d'identifiants.
+        raise HTTPException(
+            status_code=503,
+            detail="La connexion Google n'est pas configurée sur ce service",
+        )
+
+    infos = await _infos_jeton_google(payload.credential)
+
+    if infos.get("aud") != settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=401,
+            detail="Jeton Google non autorisé pour ce site",
+        )
+
+    email = (infos.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="Adresse email absente du jeton Google")
+
+    # Google renvoie la valeur sous forme de chaîne ("true") sur cet endpoint.
+    if str(infos.get("email_verified", "")).lower() != "true":
+        raise HTTPException(
+            status_code=401,
+            detail="Cette adresse email Google n'est pas vérifiée",
+        )
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is not None:
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Ce compte est désactivé")
+
+        # Compte créé par mot de passe, rouvert ici avec Google : Google certifie
+        # que l'adresse appartient bien à la personne qui se connecte, le compte
+        # lui revient donc. Le mot de passe est retiré au passage — sinon
+        # quiconque aurait enregistré cette adresse avant son propriétaire
+        # conserverait un accès parallèle au compte.
+        #
+        # Conséquence assumée : après une première connexion Google, le mot de
+        # passe ne fonctionne plus. Le site n'a pas de « mot de passe oublié »,
+        # l'accès passe donc désormais par Google.
+        if user.auth_provider == "local":
+            user.auth_provider = "google"
+            user.hashed_password = None
+            await db.commit()
+    else:
+        # Google fournit un nom d'affichage, pas un identifiant : il faut en
+        # fabriquer un, unique, en respectant les règles du site (alphanumérique,
+        # au moins 3 caractères).
+        base = infos.get("name") or email.split("@")[0]
+        base = "".join(c for c in base if c.isalnum()).lower()[:30] or "utilisateur"
+        if len(base) < 3:
+            base = f"{base}pdf"
+
+        username = base
+        suffixe = 1
+        while True:
+            existe = await db.execute(select(User).where(User.username == username))
+            if existe.scalar_one_or_none() is None:
+                break
+            suffixe += 1
+            username = f"{base}{suffixe}"
+
+        user = User(
+            email=email,
+            username=username,
+            hashed_password=None,  # aucun mot de passe : l'accès passe par Google
+            auth_provider="google",
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    return Token(
+        access_token=create_access_token({"sub": str(user.id)}),
+        user=_user_response(user, await _get_daily_usage(db, user.id)),
+    )

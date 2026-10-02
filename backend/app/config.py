@@ -41,6 +41,17 @@ class Settings:
     TOKEN_ISSUER: str = os.getenv("TOKEN_ISSUER", "pdf-tools")
     TOKEN_AUDIENCE: str = os.getenv("TOKEN_AUDIENCE", "pdf-tools-api")
 
+    # --- Connexion Google ---
+    # Identifiant public du client OAuth (il figure dans le JavaScript du site,
+    # ce n'est pas un secret). Il sert a verifier que le jeton recu a bien ete
+    # emis pour CE site : sans ce controle, un jeton obtenu par une autre
+    # application utilisant le meme compte Google serait accepte ici.
+    #
+    # Vide = la connexion Google est desactivee et l'endpoint repond 503 avec un
+    # message explicite. C'est preferable a un echec silencieux au moment ou
+    # l'utilisateur clique.
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+
     # --- Base de donnees ---
     # SQLite pour le developpement local, PostgreSQL en production (Neon,
     # Railway...). Le disque d'un Space HuggingFace est EPHEMERE : un fichier

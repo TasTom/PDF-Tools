@@ -19,6 +19,9 @@ if str(_BACKEND) not in sys.path:
 
 # --- Environnement, avant le premier import de `app` ---
 os.environ.setdefault("SECRET_KEY", "cle-de-test-uniquement-32-caracteres-minimum")
+# Identifiant Google de test : les tests de connexion Google remplacent l'appel
+# reseau, mais l'endpoint refuse de fonctionner sans identifiant configure.
+os.environ.setdefault("GOOGLE_CLIENT_ID", "client-de-test.apps.googleusercontent.com")
 # Base jetable : chaque execution de la suite repart d'un schema vide.
 _BASE_TEST = Path(tempfile.gettempdir()) / "pdf_tools_tests.db"
 for suffixe in ("", "-wal", "-shm"):
